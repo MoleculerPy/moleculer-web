@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from moleculerpy_web.alias import AliasResolver, colon_to_brace
+from moleculerpy_web.alias import (
+    AliasResolver,
+    colon_to_brace,
+    generate_rest_aliases,
+    is_rest_shorthand,
+    parse_rest_shorthand,
+)
 
 
 class TestColonToBrace:
@@ -223,3 +229,82 @@ class TestAliasMatchFields:
         assert result.alias == "/users/{id}"
         assert result.action == "users.get"
         assert result.params == {"id": "42"}
+
+
+class TestRESTShorthand:
+    """Tests for REST shorthand alias generation."""
+
+    def test_rest_all_6_routes(self) -> None:
+        result = generate_rest_aliases("/users", "users")
+        assert len(result) == 6
+        assert result == {
+            "GET /users": "users.list",
+            "GET /users/{id}": "users.get",
+            "POST /users": "users.create",
+            "PUT /users/{id}": "users.update",
+            "PATCH /users/{id}": "users.patch",
+            "DELETE /users/{id}": "users.remove",
+        }
+
+    def test_rest_with_only(self) -> None:
+        result = generate_rest_aliases("/users", {"action": "users", "only": ["list", "get"]})
+        assert len(result) == 2
+        assert result == {
+            "GET /users": "users.list",
+            "GET /users/{id}": "users.get",
+        }
+
+    def test_rest_with_except(self) -> None:
+        result = generate_rest_aliases("/users", {"action": "users", "except": ["remove"]})
+        assert len(result) == 5
+        assert "DELETE /users/{id}" not in result
+        assert "GET /users" in result
+
+    def test_rest_with_only_and_except(self) -> None:
+        result = generate_rest_aliases(
+            "/users",
+            {"action": "users", "only": ["list", "get", "create"], "except": ["create"]},
+        )
+        assert len(result) == 2
+        assert result == {
+            "GET /users": "users.list",
+            "GET /users/{id}": "users.get",
+        }
+
+    def test_rest_dict_config(self) -> None:
+        result = generate_rest_aliases("/products", {"action": "products", "only": ["list"]})
+        assert result == {"GET /products": "products.list"}
+
+    def test_rest_trailing_slash(self) -> None:
+        result = generate_rest_aliases("/users/", "users")
+        result_no_slash = generate_rest_aliases("/users", "users")
+        assert result == result_no_slash
+
+    def test_rest_action_names(self) -> None:
+        result = generate_rest_aliases("/items", "items")
+        actions = sorted(result.values())
+        assert actions == [
+            "items.create",
+            "items.get",
+            "items.list",
+            "items.patch",
+            "items.remove",
+            "items.update",
+        ]
+
+    def test_rest_path_params(self) -> None:
+        result = generate_rest_aliases("/orders", "orders")
+        paths_with_id = [k for k in result if "{id}" in k]
+        assert len(paths_with_id) == 4  # get, update, patch, remove
+
+    def test_is_rest_shorthand(self) -> None:
+        assert is_rest_shorthand("REST /users") is True
+        assert is_rest_shorthand("  REST /users") is True
+        assert is_rest_shorthand("GET /users") is False
+        assert is_rest_shorthand("RESTORE /users") is False
+        assert is_rest_shorthand("") is False
+
+    def test_parse_rest_shorthand(self) -> None:
+        assert parse_rest_shorthand("REST /users") == "/users"
+        assert parse_rest_shorthand("  REST  /products ") == "/products"
+        assert parse_rest_shorthand("REST /api/v1/items") == "/api/v1/items"

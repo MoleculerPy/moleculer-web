@@ -12,8 +12,11 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from moleculerpy_web.alias import AliasResolver
+from moleculerpy_web.cors import CorsConfig
 from moleculerpy_web.errors import GatewayError, NotFoundError
 from moleculerpy_web.handler import build_response, create_error_response, handle_request
+from moleculerpy_web.ratelimit import RateLimitConfig
+from moleculerpy_web.route import RouteConfig
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -430,3 +433,322 @@ class TestSSRFProtection:
         assert resp.status_code == 200
         call_args = mock_broker.call.call_args
         assert call_args[0][0] == "posts.recent"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for Phase 2 pipeline tests
+# ---------------------------------------------------------------------------
+
+
+def _make_pipeline_app(
+    broker: Any,
+    alias_resolver: AliasResolver,
+    route_config: RouteConfig,
+    base_path: str = "/api",
+) -> Starlette:
+    """Create a Starlette app using RouteConfig-based pipeline."""
+
+    async def catch_all(request: Request) -> Any:
+        try:
+            return await handle_request(
+                request,
+                broker=broker,
+                alias_resolver=alias_resolver,
+                route_config=route_config,
+                base_path=base_path,
+            )
+        except GatewayError as e:
+            return await create_error_response(e)
+
+    return Starlette(
+        routes=[
+            Route(
+                "/{path:path}",
+                catch_all,
+                methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+            ),
+            Route(
+                "/",
+                catch_all,
+                methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+            ),
+        ],
+    )
+
+
+def _pipeline_client(
+    broker: Any,
+    alias_resolver: AliasResolver,
+    route_config: RouteConfig,
+    **kwargs: Any,
+) -> TestClient:
+    app = _make_pipeline_app(broker, alias_resolver, route_config, **kwargs)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Middleware pipeline tests
+# ---------------------------------------------------------------------------
+
+
+class TestMiddlewarePipeline:
+    def test_middleware_pipeline_executes_in_order(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """Middleware should execute in the order they are added."""
+        order: list[str] = []
+
+        async def before_call(ctx: Any, route: Any, req: Any) -> None:
+            order.append("before")
+
+        async def after_call(ctx: Any, route: Any, req: Any, data: Any) -> Any:
+            order.append("after")
+            return data
+
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            on_before_call=before_call,
+            on_after_call=after_call,
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        resp = client.get("/api/users")
+        assert resp.status_code == 200
+        assert order == ["before", "after"]
+
+    def test_on_before_call_hook(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """onBeforeCall hook should be invoked before broker.call."""
+        called = False
+
+        async def before_call(ctx: Any, route: Any, req: Any) -> None:
+            nonlocal called
+            called = True
+            ctx.params["injected"] = "yes"
+
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            on_before_call=before_call,
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        client.get("/api/users")
+        assert called
+        call_args = mock_broker.call.call_args
+        assert call_args[0][1]["injected"] == "yes"
+
+    def test_on_after_call_hook_modifies_data(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """onAfterCall hook can modify the response data."""
+        mock_broker.call = AsyncMock(return_value={"original": True})
+
+        async def after_call(ctx: Any, route: Any, req: Any, data: Any) -> Any:
+            data["modified"] = True
+            return data
+
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            on_after_call=after_call,
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        resp = client.get("/api/users")
+        assert resp.json()["modified"] is True
+        assert resp.json()["original"] is True
+
+    def test_on_error_hook(self, mock_broker: MagicMock, alias_resolver: AliasResolver) -> None:
+        """onError hook receives the error and can return a custom response."""
+        from starlette.responses import JSONResponse
+
+        async def on_error(req: Any, err: Any) -> Any:
+            return JSONResponse({"custom_error": True, "msg": str(err)}, status_code=500)
+
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            whitelist=["nope.*"],  # Will block users.list
+            on_error=on_error,
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        resp = client.get("/api/users")
+        assert resp.status_code == 500
+        assert resp.json()["custom_error"] is True
+
+    def test_whitelist_blocks_action(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """Whitelist should block actions that don't match."""
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            whitelist=["posts.*"],
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        resp = client.get("/api/users")
+        assert resp.status_code == 404
+        mock_broker.call.assert_not_called()
+
+    def test_whitelist_allows_matching_action(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """Whitelist should allow actions that match."""
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            whitelist=["users.*"],
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        resp = client.get("/api/users")
+        assert resp.status_code == 200
+
+    def test_blacklist_blocks_action(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """Blacklist should block matching actions."""
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            blacklist=["users.*"],
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        resp = client.get("/api/users")
+        assert resp.status_code == 404
+        mock_broker.call.assert_not_called()
+
+    def test_authentication_sets_user(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """Authentication hook should set ctx.user and pass it in meta."""
+
+        async def authenticate(ctx: Any, route: Any, req: Any) -> dict[str, Any]:
+            return {"id": 42, "name": "Alice"}
+
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            authentication=authenticate,
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        resp = client.get("/api/users")
+        assert resp.status_code == 200
+        call_args = mock_broker.call.call_args
+        meta = call_args.kwargs.get("meta") or call_args[1].get("meta", {})
+        assert meta["user"] == {"id": 42, "name": "Alice"}
+
+    def test_authorization_denies(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """Authorization hook raising ForbiddenError should return 403."""
+        from moleculerpy_web.errors import ForbiddenError
+
+        async def authorize(ctx: Any, route: Any, req: Any) -> None:
+            raise ForbiddenError("Not allowed")
+
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            authorization=authorize,
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        resp = client.get("/api/users")
+        assert resp.status_code == 403
+        mock_broker.call.assert_not_called()
+
+    def test_cors_preflight_returns_200(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """CORS preflight (OPTIONS + Access-Control-Request-Method) should return 200."""
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            cors=CorsConfig(origin="https://example.com"),
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        resp = client.options(
+            "/api/users",
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert resp.status_code == 200
+        assert "access-control-allow-origin" in resp.headers
+        mock_broker.call.assert_not_called()
+
+    def test_cors_headers_on_response(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """Normal requests should include CORS headers in response."""
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            cors=CorsConfig(origin="*"),
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        resp = client.get("/api/users", headers={"Origin": "https://example.com"})
+        assert resp.status_code == 200
+        assert resp.headers.get("access-control-allow-origin") == "*"
+
+    def test_rate_limit_headers(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """Rate limit headers should be added to the response."""
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            rate_limit=RateLimitConfig(window=60, limit=10, headers=True),
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        resp = client.get("/api/users")
+        assert resp.status_code == 200
+        assert resp.headers.get("x-rate-limit-limit") == "10"
+        assert resp.headers.get("x-rate-limit-remaining") == "9"
+        assert "x-rate-limit-reset" in resp.headers
+
+    def test_rate_limit_exceeded_429(
+        self, mock_broker: MagicMock, alias_resolver: AliasResolver
+    ) -> None:
+        """Exceeding rate limit should return 429."""
+        config = RouteConfig(
+            path="/",
+            aliases={"GET /users": "users.list"},
+            rate_limit=RateLimitConfig(window=60, limit=2, headers=True),
+        )
+        client = _pipeline_client(mock_broker, alias_resolver, config)
+        client.get("/api/users")  # 1
+        client.get("/api/users")  # 2
+        resp = client.get("/api/users")  # 3 -> exceeded
+        assert resp.status_code == 429
+
+    def test_rest_shorthand_in_service(self, mock_broker: MagicMock) -> None:
+        """REST shorthand aliases should generate proper CRUD routes in service."""
+        from moleculerpy_web.service import ApiGatewayService
+
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={
+                "port": 3000,
+                "path": "/api",
+                "routes": [
+                    {
+                        "path": "/",
+                        "aliases": {"REST /users": "users"},
+                    }
+                ],
+            },
+        )
+        svc._build_routes()
+        assert len(svc._routes) == 1
+        _config, resolver = svc._routes[0]
+        # Should have REST CRUD routes
+        assert resolver.resolve("GET", "/users") is not None
+        assert resolver.resolve("GET", "/users/42") is not None
+        assert resolver.resolve("POST", "/users") is not None
+        assert resolver.resolve("PUT", "/users/42") is not None
+        assert resolver.resolve("DELETE", "/users/42") is not None
+
+        match = resolver.resolve("GET", "/users")
+        assert match is not None
+        assert match.action == "users.list"

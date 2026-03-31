@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import unquote
 
 # Pattern to convert Express-style :param to {param} (only after /)
@@ -158,3 +159,70 @@ class AliasResolver:
                     alias=alias.path,
                 )
         return None
+
+
+def generate_rest_aliases(
+    path: str,
+    action_or_config: str | dict[str, Any],
+) -> dict[str, str]:
+    """Generate CRUD aliases from REST shorthand.
+
+    Node.js moleculer-web compatible REST route generation.
+
+    Args:
+        path: Resource path (e.g., "/users").
+        action_or_config: Either action prefix string or config dict with:
+            - action: str — action prefix
+            - only: list[str] | None — only these actions
+            - except: list[str] | None — exclude these actions
+
+    Returns:
+        Dict mapping alias patterns to action names.
+
+    Examples:
+        >>> generate_rest_aliases("/users", "users")
+        {'GET /users': 'users.list', 'GET /users/{id}': 'users.get', ...}
+
+        >>> generate_rest_aliases("/products", {"action": "products", "only": ["list", "get"]})
+        {'GET /products': 'products.list', 'GET /products/{id}': 'products.get'}
+    """
+    if isinstance(action_or_config, str):
+        action_prefix = action_or_config
+        only: list[str] | None = None
+        except_: list[str] | None = None
+    else:
+        action_prefix = action_or_config["action"]
+        only = action_or_config.get("only")
+        except_ = action_or_config.get("except")
+
+    path = path.rstrip("/")
+
+    all_routes = {
+        "list": (f"GET {path}", f"{action_prefix}.list"),
+        "get": (f"GET {path}/{{id}}", f"{action_prefix}.get"),
+        "create": (f"POST {path}", f"{action_prefix}.create"),
+        "update": (f"PUT {path}/{{id}}", f"{action_prefix}.update"),
+        "patch": (f"PATCH {path}/{{id}}", f"{action_prefix}.patch"),
+        "remove": (f"DELETE {path}/{{id}}", f"{action_prefix}.remove"),
+    }
+
+    action_names = list(all_routes.keys())
+    if only is not None:
+        action_names = [a for a in action_names if a in only]
+    if except_ is not None:
+        action_names = [a for a in action_names if a not in except_]
+
+    return {all_routes[a][0]: all_routes[a][1] for a in action_names}
+
+
+def is_rest_shorthand(alias_pattern: str) -> bool:
+    """Check if alias pattern is a REST shorthand (starts with 'REST ')."""
+    return alias_pattern.strip().startswith("REST ")
+
+
+def parse_rest_shorthand(alias_pattern: str) -> str:
+    """Extract path from REST shorthand pattern.
+
+    Example: "REST /users" -> "/users"
+    """
+    return alias_pattern.strip()[5:].strip()

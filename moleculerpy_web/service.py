@@ -16,7 +16,12 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
-from moleculerpy_web.alias import AliasResolver
+from moleculerpy_web.alias import (
+    AliasResolver,
+    generate_rest_aliases,
+    is_rest_shorthand,
+    parse_rest_shorthand,
+)
 from moleculerpy_web.errors import GatewayError, NotFoundError
 from moleculerpy_web.handler import create_error_response, handle_request
 from moleculerpy_web.route import RouteConfig, parse_route_config
@@ -73,16 +78,32 @@ class ApiGatewayService:
         return path
 
     def _build_routes(self) -> None:
-        """Parse route configs and build alias resolvers."""
+        """Parse route configs and build alias resolvers.
+
+        Handles REST shorthand aliases (e.g., "REST /users" -> CRUD routes)
+        and action config dicts alongside plain string actions.
+        """
         self._routes.clear()
         raw_routes = self.settings.get("routes", [])
         for raw in raw_routes:
             route_config = parse_route_config(raw) if isinstance(raw, dict) else raw
             resolver = AliasResolver()
-            for alias_pattern, action in route_config.aliases.items():
-                method, path = parse_alias_pattern(alias_pattern)
-                normalized = normalize_path(path)
-                resolver.add_alias(method, normalized, action)
+            for alias_pattern, action_or_config in route_config.aliases.items():
+                # Handle REST shorthand
+                if is_rest_shorthand(alias_pattern):
+                    rest_path = parse_rest_shorthand(alias_pattern)
+                    rest_aliases = generate_rest_aliases(rest_path, action_or_config)
+                    for rest_pattern, rest_action in rest_aliases.items():
+                        method, path = parse_alias_pattern(rest_pattern)
+                        resolver.add_alias(method, normalize_path(path), rest_action)
+                else:
+                    method, path = parse_alias_pattern(alias_pattern)
+                    action = (
+                        action_or_config
+                        if isinstance(action_or_config, str)
+                        else action_or_config.get("action", "")
+                    )
+                    resolver.add_alias(method, normalize_path(path), action)
             self._routes.append((route_config, resolver))
 
     def _create_app(self) -> Starlette:
@@ -136,8 +157,7 @@ class ApiGatewayService:
                     request=request,
                     broker=self.broker,
                     alias_resolver=resolver,
-                    route_path=route_config.path,
-                    mapping_policy=route_config.mapping_policy,
+                    route_config=route_config,
                     base_path=self.base_path,
                 )
             except NotFoundError:

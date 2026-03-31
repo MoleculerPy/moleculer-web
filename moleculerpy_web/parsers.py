@@ -54,4 +54,17 @@ async def parse_body(
             )
         return parsed
 
+    if "application/x-www-form-urlencoded" in content_type:
+        body = await request.body()
+        if not body:
+            return {}
+        if len(body) > max_body_size:
+            raise PayloadTooLargeError(
+                f"Request body too large ({len(body)} bytes, max {max_body_size})",
+            )
+        form_data = await request.form()
+        result = dict(form_data)
+        await form_data.close()
+        return result
+
     return {}
