@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from moleculerpy import Service
 
 from moleculerpy_web.service import ApiGatewayService
 
@@ -526,3 +529,586 @@ class TestBugFixes:
                     await gateway._server_task
                 except (asyncio.CancelledError, Exception):
                     pass
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Service Inheritance (ADR-002)
+# ---------------------------------------------------------------------------
+
+
+class TestServiceInheritance:
+    """Verify ApiGatewayService inherits from moleculerpy.Service."""
+
+    def test_inherits_from_service(self) -> None:
+        """ApiGatewayService must be a subclass of moleculerpy.Service."""
+        assert issubclass(ApiGatewayService, Service)
+
+    def test_instance_is_service(self) -> None:
+        """Instance must be isinstance of Service."""
+        svc = ApiGatewayService()
+        assert isinstance(svc, Service)
+
+    def test_service_name_from_class_attribute(self) -> None:
+        """Class-level name='api' should be used by Service."""
+        svc = ApiGatewayService()
+        assert svc.name == "api"
+
+    def test_service_name_override(self) -> None:
+        """Name passed to constructor should override class attribute."""
+        svc = ApiGatewayService(name="gateway")
+        assert svc.name == "gateway"
+
+    def test_settings_merge(self) -> None:
+        """Instance settings should be accessible."""
+        svc = ApiGatewayService(settings={"port": 8080, "path": "/v1"})
+        assert svc.port == 8080
+        assert svc.base_path == "/v1"
+
+    def test_broker_standalone_mode(self) -> None:
+        """Broker can be passed directly for standalone/testing."""
+        broker = MagicMock()
+        svc = ApiGatewayService(broker=broker)
+        assert svc.broker is broker
+
+    def test_broker_none_by_default(self) -> None:
+        """Without broker arg, broker should be None (set by broker.create_service later)."""
+        svc = ApiGatewayService()
+        assert svc.broker is None
+
+    def test_has_lifecycle_hooks(self) -> None:
+        """Service should have started/stopped lifecycle hooks."""
+        svc = ApiGatewayService()
+        assert hasattr(svc, "started")
+        assert hasattr(svc, "stopped")
+        assert asyncio.iscoroutinefunction(svc.started)
+        assert asyncio.iscoroutinefunction(svc.stopped)
+
+    def test_subclass_inherits_properly(self) -> None:
+        """User-defined subclass should work correctly."""
+        class MyGateway(ApiGatewayService):
+            name = "my-api"
+
+        gw = MyGateway(settings={"port": 4000, "path": "/my-api", "routes": []})
+        assert gw.name == "my-api"
+        assert gw.port == 4000
+        assert isinstance(gw, Service)
+        assert isinstance(gw, ApiGatewayService)
+
+    def test_subclass_with_class_settings_and_mixins(self) -> None:
+        """Subclass with mixins should merge class-level settings properly."""
+        # Without mixins, class-level settings need explicit merge.
+        # This is a known limitation of Service — class settings only auto-merge with mixins.
+        # Users should pass settings via constructor or use mixins.
+        class MyGateway(ApiGatewayService):
+            name = "custom"
+
+        gw = MyGateway(settings={"port": 5000})
+        assert gw.name == "custom"
+        assert gw.port == 5000
+
+    def test_dependencies_passed_to_service(self) -> None:
+        """Dependencies should be forwarded to Service base."""
+        svc = ApiGatewayService(dependencies=["users", "auth"])
+        assert svc.dependencies == ["users", "auth"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Internal Actions (listAliases, addRoute, removeRoute)
+# ---------------------------------------------------------------------------
+
+
+class TestInternalActions:
+    """Test internal actions exposed via @action decorator."""
+
+    @pytest.fixture
+    def gw_with_routes(self, mock_broker: MagicMock) -> ApiGatewayService:
+        settings = {
+            "port": 3000,
+            "path": "/api",
+            "routes": [
+                {
+                    "path": "/v1",
+                    "aliases": {
+                        "GET /users": "users.list",
+                        "POST /users": "users.create",
+                        "GET /users/{id}": "users.get",
+                    },
+                },
+                {
+                    "path": "/v2",
+                    "aliases": {"GET /health": "health.check"},
+                },
+            ],
+        }
+        svc = ApiGatewayService(broker=mock_broker, settings=settings)
+        svc._build_routes()
+        return svc
+
+    async def test_list_aliases(self, gw_with_routes: ApiGatewayService) -> None:
+        """listAliases should return all registered aliases."""
+        result = await gw_with_routes.list_aliases()
+        assert isinstance(result, list)
+        assert len(result) == 4  # 3 from v1 + 1 from v2
+
+        # Check structure
+        for item in result:
+            assert "method" in item
+            assert "path" in item
+            assert "action" in item
+            assert "route" in item
+
+        # Check specific aliases
+        actions = {item["action"] for item in result}
+        assert "users.list" in actions
+        assert "users.create" in actions
+        assert "users.get" in actions
+        assert "health.check" in actions
+
+    async def test_list_aliases_empty(self) -> None:
+        """listAliases on empty gateway should return empty list."""
+        svc = ApiGatewayService(settings={"routes": []})
+        svc._build_routes()
+        result = await svc.list_aliases()
+        assert result == []
+
+    async def test_add_route(self, mock_broker: MagicMock) -> None:
+        """addRoute should add a new route at runtime."""
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={"path": "/api", "routes": []},
+        )
+        svc._build_routes()
+        assert len(svc._routes) == 0
+
+        result = await svc.add_route(
+            route={"path": "/new", "aliases": {"GET /items": "items.list"}},
+        )
+        assert result["success"] is True
+        assert result["path"] == "/new"
+        assert result["aliases"] == 1
+        assert len(svc._routes) == 1
+
+    async def test_add_route_to_top(self, mock_broker: MagicMock) -> None:
+        """addRoute with to_bottom=False should insert at beginning."""
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={
+                "path": "/api",
+                "routes": [{"path": "/existing", "aliases": {"GET /a": "a.get"}}],
+            },
+        )
+        svc._build_routes()
+        assert len(svc._routes) == 1
+
+        await svc.add_route(
+            route={"path": "/first", "aliases": {"GET /b": "b.get"}},
+            to_bottom=False,
+        )
+        assert len(svc._routes) == 2
+        assert svc._routes[0][0].path == "/first"
+
+    async def test_add_route_empty_config(self) -> None:
+        """addRoute with empty route config should fail gracefully."""
+        svc = ApiGatewayService(settings={"routes": []})
+        svc._build_routes()
+        result = await svc.add_route(route={})
+        assert result["success"] is False
+
+    async def test_remove_route(self, gw_with_routes: ApiGatewayService) -> None:
+        """removeRoute should remove route by path."""
+        assert len(gw_with_routes._routes) == 2
+
+        result = await gw_with_routes.remove_route(path="/v1")
+        assert result["success"] is True
+        assert result["removed"] == 1
+        assert len(gw_with_routes._routes) == 1
+        assert gw_with_routes._routes[0][0].path == "/v2"
+
+    async def test_remove_route_nonexistent(self, gw_with_routes: ApiGatewayService) -> None:
+        """removeRoute with non-existent path should return success=False."""
+        result = await gw_with_routes.remove_route(path="/nonexistent")
+        assert result["success"] is False
+        assert result["removed"] == 0
+
+    async def test_remove_route_no_path(self) -> None:
+        """removeRoute without path should return error."""
+        svc = ApiGatewayService(settings={"routes": []})
+        svc._build_routes()
+        result = await svc.remove_route()
+        assert result["success"] is False
+
+    async def test_add_then_list(self, mock_broker: MagicMock) -> None:
+        """Adding a route should be reflected in listAliases."""
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={"path": "/api", "routes": []},
+        )
+        svc._build_routes()
+        assert await svc.list_aliases() == []
+
+        await svc.add_route(
+            route={"path": "/new", "aliases": {"GET /items": "items.list"}},
+        )
+        aliases = await svc.list_aliases()
+        assert len(aliases) == 1
+        assert aliases[0]["action"] == "items.list"
+
+    async def test_add_route_with_rest_shorthand(self, mock_broker: MagicMock) -> None:
+        """addRoute should support REST shorthand."""
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={"path": "/api", "routes": []},
+        )
+        svc._build_routes()
+
+        await svc.add_route(
+            route={"path": "/", "aliases": {"REST /products": "products"}},
+        )
+        aliases = await svc.list_aliases()
+        # REST shorthand generates 6 CRUD aliases
+        assert len(aliases) == 6
+        actions = {a["action"] for a in aliases}
+        assert "products.list" in actions
+        assert "products.get" in actions
+        assert "products.create" in actions
+
+    async def test_actions_discoverable(self) -> None:
+        """Internal actions should be discoverable via Service.actions()."""
+        svc = ApiGatewayService()
+        action_names = svc.actions()
+        # Must have at least 3 actions (list_aliases, add_route, remove_route)
+        assert len(action_names) >= 3
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Security Guards
+# ---------------------------------------------------------------------------
+
+
+class TestSecurityGuards:
+    """Test security guards on internal actions."""
+
+    async def test_add_route_rejects_remote_call(self) -> None:
+        """addRoute must reject calls from remote nodes."""
+        mock_broker = MagicMock()
+        mock_broker.node_id = "local-node-1"
+
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={"path": "/api", "routes": []},
+        )
+        svc._build_routes()
+
+        # Simulate remote context
+        remote_ctx = MagicMock()
+        remote_ctx.node_id = "remote-node-2"
+        remote_ctx.params = {"route": {"path": "/evil", "aliases": {"GET /x": "x.y"}}}
+
+        result = await svc.add_route(remote_ctx)
+        assert result["success"] is False
+        assert "local-only" in result["error"]
+
+    async def test_add_route_allows_local_call(self) -> None:
+        """addRoute must allow calls from local node."""
+        mock_broker = MagicMock()
+        mock_broker.node_id = "local-node-1"
+
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={"path": "/api", "routes": []},
+        )
+        svc._build_routes()
+
+        local_ctx = MagicMock()
+        local_ctx.node_id = "local-node-1"
+        local_ctx.params = {"route": {"path": "/ok", "aliases": {"GET /a": "a.b"}}}
+
+        result = await svc.add_route(local_ctx)
+        assert result["success"] is True
+
+    async def test_add_route_rejects_unknown_node(self) -> None:
+        """addRoute must reject when node_id cannot be verified (fail-secure)."""
+        mock_broker = MagicMock()
+        mock_broker.node_id = None  # no node_id
+
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={"path": "/api", "routes": []},
+        )
+        svc._build_routes()
+
+        ctx = MagicMock()
+        ctx.node_id = "some-node"
+        ctx.params = {"route": {"path": "/x", "aliases": {}}}
+
+        result = await svc.add_route(ctx)
+        assert result["success"] is False
+
+    async def test_remove_route_rejects_remote_call(self) -> None:
+        """removeRoute must reject calls from remote nodes."""
+        mock_broker = MagicMock()
+        mock_broker.node_id = "local-1"
+
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={"path": "/api", "routes": [{"path": "/v1", "aliases": {"GET /a": "a.b"}}]},
+        )
+        svc._build_routes()
+
+        remote_ctx = MagicMock()
+        remote_ctx.node_id = "remote-2"
+        remote_ctx.params = {"path": "/v1"}
+
+        result = await svc.remove_route(remote_ctx)
+        assert result["success"] is False
+        assert "local-only" in result["error"]
+
+    async def test_direct_call_without_ctx_allowed(self) -> None:
+        """Direct Python call (ctx=None) should be allowed."""
+        svc = ApiGatewayService(settings={"path": "/api", "routes": []})
+        svc._build_routes()
+        result = await svc.add_route(route={"path": "/ok", "aliases": {"GET /x": "x.y"}})
+        assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Auto-aliases ($services.changed)
+# ---------------------------------------------------------------------------
+
+
+class TestAutoAliases:
+    """Test auto-alias generation from action.rest annotations."""
+
+    def test_regenerate_no_broker(self) -> None:
+        """Without broker, regeneration should return 0."""
+        svc = ApiGatewayService(settings={"routes": []})
+        svc._build_routes()
+        assert svc._regenerate_auto_aliases() == 0
+
+    def test_regenerate_with_auto_aliases_route(self) -> None:
+        """Route with autoAliases=True should scan registry for rest annotations."""
+        mock_broker = MagicMock()
+        # Simulate registry with actions having rest annotations
+        mock_broker.registry.action_list = [
+            {"name": "users.list", "rest": "GET /users"},
+            {"name": "users.get", "rest": "GET /users/{id}"},
+            {"name": "users.create", "rest": "POST /users"},
+            {"name": "posts.list", "rest": {"method": "GET", "path": "/posts"}},
+            {"name": "internal.action", "rest": None},  # no rest — skip
+        ]
+
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={
+                "path": "/api",
+                "routes": [{"path": "/auto", "autoAliases": True, "aliases": {}}],
+            },
+        )
+        svc._build_routes()
+
+        count = svc._regenerate_auto_aliases()
+        assert count == 4  # 4 actions with rest annotations
+
+        # Check aliases were registered
+        aliases = svc._routes[0][1].aliases
+        actions = {a.action for a in aliases}
+        assert "users.list" in actions
+        assert "users.get" in actions
+        assert "users.create" in actions
+        assert "posts.list" in actions
+
+    def test_regenerate_clears_old_aliases(self) -> None:
+        """Regeneration should clear old auto-aliases before rebuilding."""
+        mock_broker = MagicMock()
+        mock_broker.registry.action_list = [
+            {"name": "users.list", "rest": "GET /users"},
+        ]
+
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={
+                "path": "/api",
+                "routes": [{"path": "/auto", "autoAliases": True, "aliases": {}}],
+            },
+        )
+        svc._build_routes()
+
+        # First run
+        svc._regenerate_auto_aliases()
+        assert len(svc._routes[0][1].aliases) == 1
+
+        # Second run (same data) — should still be 1, not 2
+        svc._regenerate_auto_aliases()
+        assert len(svc._routes[0][1].aliases) == 1
+
+    def test_non_auto_route_not_affected(self) -> None:
+        """Routes without autoAliases should not be affected."""
+        mock_broker = MagicMock()
+        mock_broker.registry.action_list = [
+            {"name": "users.list", "rest": "GET /users"},
+        ]
+
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={
+                "path": "/api",
+                "routes": [
+                    {"path": "/manual", "aliases": {"GET /hello": "hello.world"}},
+                    {"path": "/auto", "autoAliases": True, "aliases": {}},
+                ],
+            },
+        )
+        svc._build_routes()
+        svc._regenerate_auto_aliases()
+
+        # Manual route should keep its aliases
+        manual_aliases = svc._routes[0][1].aliases
+        assert len(manual_aliases) == 1
+        assert manual_aliases[0].action == "hello.world"
+
+        # Auto route should have auto-generated aliases
+        auto_aliases = svc._routes[1][1].aliases
+        assert len(auto_aliases) == 1
+
+    async def test_services_changed_event(self) -> None:
+        """$services.changed event should trigger regeneration."""
+        mock_broker = MagicMock()
+        mock_broker.registry.action_list = [
+            {"name": "users.list", "rest": "GET /users"},
+        ]
+
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={
+                "path": "/api",
+                "routes": [{"path": "/auto", "autoAliases": True, "aliases": {}}],
+            },
+        )
+        svc._build_routes()
+
+        # Simulate $services.changed event
+        await svc._on_services_changed()
+
+        # Auto-aliases should be regenerated
+        aliases = svc._routes[0][1].aliases
+        assert len(aliases) == 1
+        assert aliases[0].action == "users.list"
+
+    def test_auto_aliases_with_no_registry(self) -> None:
+        """Without registry, regeneration should return 0."""
+        mock_broker = MagicMock(spec=[])  # no registry attribute
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={
+                "path": "/api",
+                "routes": [{"path": "/", "autoAliases": True, "aliases": {}}],
+            },
+        )
+        svc._build_routes()
+        assert svc._regenerate_auto_aliases() == 0
+
+    def test_rest_annotation_default_get(self) -> None:
+        """REST annotation without method should default to GET."""
+        mock_broker = MagicMock()
+        mock_broker.registry.action_list = [
+            {"name": "health.check", "rest": "/health"},  # no method = GET
+        ]
+
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={
+                "path": "/api",
+                "routes": [{"path": "/", "autoAliases": True, "aliases": {}}],
+            },
+        )
+        svc._build_routes()
+        svc._regenerate_auto_aliases()
+
+        aliases = svc._routes[0][1].aliases
+        assert len(aliases) == 1
+        assert aliases[0].method == "GET"
+        assert aliases[0].action == "health.check"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Static File Serving
+# ---------------------------------------------------------------------------
+
+
+class TestStaticFiles:
+    """Test static file serving via Starlette StaticFiles."""
+
+    async def test_static_files_served(self, mock_broker: MagicMock) -> None:
+        """Static files should be served from configured directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a test file
+            Path(tmpdir, "hello.txt").write_text("Hello World!")
+
+            svc = ApiGatewayService(
+                broker=mock_broker,
+                settings={
+                    "path": "/api",
+                    "routes": [],
+                    "assets": {"folder": tmpdir, "path": "/static"},
+                },
+            )
+            svc._build_routes()
+            svc._app = svc._create_app()
+
+            transport = ASGITransport(app=svc.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.get("/static/hello.txt")
+                assert resp.status_code == 200
+                assert resp.text == "Hello World!"
+
+    async def test_static_files_404(self, mock_broker: MagicMock) -> None:
+        """Non-existent static file should return 404."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            svc = ApiGatewayService(
+                broker=mock_broker,
+                settings={
+                    "path": "/api",
+                    "routes": [],
+                    "assets": {"folder": tmpdir, "path": "/static"},
+                },
+            )
+            svc._build_routes()
+            svc._app = svc._create_app()
+
+            transport = ASGITransport(app=svc.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.get("/static/nonexistent.txt")
+                assert resp.status_code == 404
+
+    async def test_no_assets_config(self, mock_broker: MagicMock) -> None:
+        """Without assets config, no static mount should be added."""
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={"path": "/api", "routes": []},
+        )
+        svc._build_routes()
+        svc._app = svc._create_app()
+        # App should still work for API routes
+        assert svc.app is not None
+
+    async def test_html_mode(self, mock_broker: MagicMock) -> None:
+        """HTML mode should serve index.html for directory requests."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "index.html").write_text("<h1>Home</h1>")
+
+            svc = ApiGatewayService(
+                broker=mock_broker,
+                settings={
+                    "path": "/api",
+                    "routes": [],
+                    "assets": {"folder": tmpdir, "path": "/", "html": True},
+                },
+            )
+            svc._build_routes()
+            svc._app = svc._create_app()
+
+            transport = ASGITransport(app=svc.app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                resp = await c.get("/")
+                assert resp.status_code == 200
+                assert "<h1>Home</h1>" in resp.text

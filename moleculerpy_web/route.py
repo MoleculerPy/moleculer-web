@@ -43,6 +43,8 @@ class RouteConfig:
     cors: CorsConfig | None = None
     rate_limit: RateLimitConfig | None = None
     body_parsers: dict[str, bool | dict[str, Any]] | None = None
+    auto_aliases: bool = False
+    etag: bool = False
 
 
 @dataclass
@@ -119,6 +121,8 @@ def parse_route_config(raw: dict[str, Any]) -> RouteConfig:
         cors=cors,
         rate_limit=rate_limit,
         body_parsers=raw.get("bodyParsers", raw.get("body_parsers")),
+        auto_aliases=raw.get("autoAliases", raw.get("auto_aliases", False)),
+        etag=raw.get("etag", False),
     )
 
 

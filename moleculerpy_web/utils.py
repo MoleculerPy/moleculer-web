@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import posixpath
 import re
 
@@ -57,3 +58,39 @@ def url_path_to_action(path: str, prefix: str) -> str:
     # Strip leading/trailing slashes and convert / to .
     path = path.strip("/")
     return path.replace("/", ".")
+
+
+def generate_etag(content: bytes) -> str:
+    """Generate ETag from response content using MD5.
+
+    Returns weak ETag (W/"...") as content may be transformed by middleware.
+
+    Examples:
+        generate_etag(b"hello") -> 'W/"5d41402abc4b2a76b9719d911017c592"'
+    """
+    digest = hashlib.md5(content, usedforsecurity=False).hexdigest()
+    return f'W/"{digest}"'
+
+
+def check_etag_match(request_etag: str, response_etag: str) -> bool:
+    """Check if request If-None-Match header matches response ETag.
+
+    Supports multiple ETags separated by commas, and wildcard '*'.
+
+    Returns True if there's a match (304 should be sent).
+    """
+    if not request_etag or not response_etag:
+        return False
+    if request_etag.strip() == "*":
+        return True
+    # Parse comma-separated ETags
+    for tag in request_etag.split(","):
+        tag = tag.strip()
+        if tag == response_etag:
+            return True
+        # Compare without W/ prefix for weak comparison
+        tag_val = tag.removeprefix("W/")
+        resp_val = response_etag.removeprefix("W/")
+        if tag_val == resp_val:
+            return True
+    return False

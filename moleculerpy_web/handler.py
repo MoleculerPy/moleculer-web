@@ -11,7 +11,7 @@ import re
 from typing import Any
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse, RedirectResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from moleculerpy_web.access import BlacklistMiddleware, WhitelistMiddleware
 from moleculerpy_web.alias import AliasResolver
@@ -27,7 +27,12 @@ from moleculerpy_web.middleware import NextHandler, RequestContext, compose_midd
 from moleculerpy_web.parsers import parse_body
 from moleculerpy_web.ratelimit import MemoryStore, RateLimitConfig, default_key_extractor
 from moleculerpy_web.route import RouteConfig
-from moleculerpy_web.utils import normalize_path, url_path_to_action
+from moleculerpy_web.utils import (
+    check_etag_match,
+    generate_etag,
+    normalize_path,
+    url_path_to_action,
+)
 
 _VALID_ACTION_RE = re.compile(r"^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)+$")
 
@@ -62,6 +67,9 @@ def build_response(
     status_code: int = 200,
     headers: dict[str, str] | None = None,
     content_type: str | None = None,
+    *,
+    request: Request | None = None,
+    etag: bool = False,
 ) -> Response:
     """Build HTTP response from action result.
 
@@ -76,6 +84,22 @@ def build_response(
     """
     if result is None:
         return Response(status_code=204, headers=headers)
+    # Streaming: async generator or async iterator
+    if hasattr(result, "__aiter__"):
+        return StreamingResponse(
+            result,
+            status_code=status_code,
+            media_type=content_type or "application/octet-stream",
+            headers=headers,
+        )
+    # Streaming: sync generator or iterator (non-str, non-bytes)
+    if hasattr(result, "__iter__") and not isinstance(result, (str, bytes, dict, list)):
+        return StreamingResponse(
+            result,
+            status_code=status_code,
+            media_type=content_type or "application/octet-stream",
+            headers=headers,
+        )
     if isinstance(result, bytes):
         return Response(
             content=result,
@@ -91,7 +115,23 @@ def build_response(
             media_type=content_type,
             headers=headers,
         )
-    # Default: JSON
+    # Default: JSON (with optional ETag)
+    if etag and request is not None and status_code == 200:
+        import json as _json
+
+        body = _json.dumps(result, separators=(",", ":")).encode()
+        etag_value = generate_etag(body)
+        if_none_match = request.headers.get("if-none-match", "")
+        if check_etag_match(if_none_match, etag_value):
+            return Response(status_code=304, headers={"ETag": etag_value})
+        resp_headers = dict(headers) if headers else {}
+        resp_headers["ETag"] = etag_value
+        return Response(
+            content=body,
+            status_code=status_code,
+            media_type="application/json",
+            headers=resp_headers,
+        )
     return JSONResponse(result, status_code=status_code, headers=headers)
 
 
@@ -309,14 +349,26 @@ async def handle_request(
             status_code = int(raw_status)
         except (TypeError, ValueError):
             status_code = 200
-        response_headers: dict[str, str] | None = ctx.meta.get("$responseHeaders")
+        raw_headers: dict[str, str] | None = ctx.meta.get("$responseHeaders")
+        # Security: sanitize response headers to prevent CRLF injection (OWASP)
+        response_headers: dict[str, str] | None = None
+        if raw_headers and isinstance(raw_headers, dict):
+            response_headers = {
+                str(k).replace("\r", "").replace("\n", "").replace("\x00", ""): str(v)
+                .replace("\r", "")
+                .replace("\n", "")
+                .replace("\x00", "")
+                for k, v in raw_headers.items()
+                if str(k).replace("\r", "").replace("\n", "").replace("\x00", "")
+            }
         response_type: str | None = ctx.meta.get("$responseType")
         location: str | None = ctx.meta.get("$location")
 
         # Handle redirects
         if location and isinstance(location, str):
             is_redirect = status_code == 201 or (300 <= status_code < 400 and status_code != 304)
-            is_safe = not location.startswith(("http://", "https://", "//"))
+            # Security: allowlist — only relative paths (OWASP A01 open redirect)
+            is_safe = location.startswith("/") and not location.startswith("//")
             if is_redirect and is_safe:
                 if status_code == 201:
                     response_headers = response_headers or {}
@@ -326,11 +378,16 @@ async def handle_request(
                         url=location, status_code=status_code, headers=response_headers
                     )
 
+        # ETag enabled per route config
+        use_etag = route_config.etag
+
         return build_response(
             result,
             status_code=status_code,
             headers=response_headers,
             content_type=response_type,
+            request=request,
+            etag=use_etag,
         )
 
     # Compose and execute pipeline

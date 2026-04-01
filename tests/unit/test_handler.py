@@ -15,6 +15,7 @@ from moleculerpy_web.alias import AliasResolver
 from moleculerpy_web.cors import CorsConfig
 from moleculerpy_web.errors import GatewayError, NotFoundError
 from moleculerpy_web.handler import build_response, create_error_response, handle_request
+from moleculerpy_web.utils import generate_etag
 from moleculerpy_web.ratelimit import RateLimitConfig
 from moleculerpy_web.route import RouteConfig
 
@@ -111,6 +112,97 @@ class TestBuildResponse:
     def test_custom_headers(self) -> None:
         resp = build_response("ok", headers={"X-Custom": "yes"})
         assert resp.headers.get("x-custom") == "yes"
+
+    def test_async_generator_returns_streaming(self) -> None:
+        """Async generator should produce StreamingResponse."""
+        from starlette.responses import StreamingResponse
+
+        async def gen():
+            yield b"chunk1"
+            yield b"chunk2"
+
+        resp = build_response(gen())
+        assert isinstance(resp, StreamingResponse)
+        assert resp.status_code == 200
+
+    def test_sync_generator_returns_streaming(self) -> None:
+        """Sync generator should produce StreamingResponse."""
+        from starlette.responses import StreamingResponse
+
+        def gen():
+            yield b"chunk1"
+            yield b"chunk2"
+
+        resp = build_response(gen())
+        assert isinstance(resp, StreamingResponse)
+        assert resp.status_code == 200
+
+    def test_streaming_with_custom_content_type(self) -> None:
+        """Streaming response should respect content_type."""
+        from starlette.responses import StreamingResponse
+
+        async def gen():
+            yield b"data"
+
+        resp = build_response(gen(), content_type="text/event-stream")
+        assert isinstance(resp, StreamingResponse)
+        assert resp.media_type == "text/event-stream"
+
+    def test_list_not_treated_as_streaming(self) -> None:
+        """List should return JSON, not streaming."""
+        resp = build_response([1, 2, 3])
+        assert resp.status_code == 200
+        assert resp.media_type == "application/json"
+
+    def test_dict_not_treated_as_streaming(self) -> None:
+        """Dict should return JSON, not streaming."""
+        resp = build_response({"key": "value"})
+        assert resp.media_type == "application/json"
+
+    def test_etag_added_when_enabled(self) -> None:
+        """ETag header should be added when etag=True."""
+        # Create mock request without If-None-Match
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        resp = build_response({"ok": True}, etag=True, request=mock_request)
+        assert resp.status_code == 200
+        assert "ETag" in resp.headers
+
+    def test_etag_304_on_match(self) -> None:
+        """Should return 304 when If-None-Match matches ETag."""
+        import json
+
+        data = {"ok": True}
+        body = json.dumps(data, separators=(",", ":")).encode()
+        etag_value = generate_etag(body)
+
+        mock_request = MagicMock()
+        mock_request.headers = {"if-none-match": etag_value}
+
+        resp = build_response(data, etag=True, request=mock_request)
+        assert resp.status_code == 304
+
+    def test_etag_200_on_mismatch(self) -> None:
+        """Should return 200 when If-None-Match doesn't match."""
+        mock_request = MagicMock()
+        mock_request.headers = {"if-none-match": 'W/"old-etag"'}
+
+        resp = build_response({"ok": True}, etag=True, request=mock_request)
+        assert resp.status_code == 200
+        assert "ETag" in resp.headers
+
+    def test_etag_not_added_when_disabled(self) -> None:
+        """ETag should not be added when etag=False (default)."""
+        resp = build_response({"ok": True})
+        assert "ETag" not in resp.headers
+
+    def test_etag_not_for_non_200(self) -> None:
+        """ETag should not be calculated for non-200 responses."""
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        resp = build_response({"error": "not found"}, status_code=404, etag=True, request=mock_request)
+        assert resp.status_code == 404
+        assert "ETag" not in resp.headers
 
 
 # ---------------------------------------------------------------------------
