@@ -107,6 +107,15 @@ class AliasResolver:
     def __init__(self) -> None:
         self._aliases: list[Alias] = []
 
+    @property
+    def aliases(self) -> list[Alias]:
+        """Read-only access to registered aliases."""
+        return self._aliases
+
+    def clear(self) -> None:
+        """Remove all registered aliases."""
+        self._aliases.clear()
+
     def add_alias(self, method: str, path: str, action: str) -> None:
         """Register a new alias.
 

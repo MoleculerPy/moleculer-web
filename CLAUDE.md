@@ -7,10 +7,16 @@
 ## Quick Start
 
 ```bash
-pip install -e ".[dev]"
-pytest                       # Run tests (277 tests, 95% coverage)
-mypy moleculerpy_web/       # Type check (strict)
-ruff check moleculerpy_web/ # Lint
+# ВАЖНО: использовать Python 3.12+ venv (НЕ системный Python 3.9)
+VENV=/Users/explosovebit/Work/MoleculerPy/.venv/bin/python
+$VENV -m pip install -e ".[dev]"
+$VENV -m pytest                  # Run tests (277 tests, 95% coverage)
+$VENV -m mypy moleculerpy_web/  # Type check (strict)
+$VENV -m ruff check moleculerpy_web/ # Lint
+
+# Или активировать venv:
+source /Users/explosovebit/Work/MoleculerPy/.venv/bin/activate
+pytest && mypy moleculerpy_web/ && ruff check moleculerpy_web/
 ```
 
 ## Architecture

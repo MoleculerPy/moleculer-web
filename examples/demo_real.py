@@ -23,10 +23,10 @@ from moleculerpy.settings import Settings
 
 from moleculerpy_web import ApiGatewayService
 
-
 # ---------------------------------------------------------------------------
 # Service 1: ProductsService — каталог товаров
 # ---------------------------------------------------------------------------
+
 
 class ProductsService(Service):
     name = "products"
@@ -36,11 +36,41 @@ class ProductsService(Service):
         self._next_id = 6
         # Seed data (instance-level — class-level mutables break with Service.__init__)
         self._db: dict[str, dict[str, Any]] = {
-            "1": {"id": "1", "name": "MacBook Pro 16", "price": 2499.0, "category": "laptops", "stock": 15},
-            "2": {"id": "2", "name": "iPhone 15 Pro", "price": 999.0, "category": "phones", "stock": 50},
-            "3": {"id": "3", "name": "AirPods Pro 2", "price": 249.0, "category": "audio", "stock": 100},
-            "4": {"id": "4", "name": "iPad Air", "price": 599.0, "category": "tablets", "stock": 30},
-            "5": {"id": "5", "name": "Apple Watch Ultra", "price": 799.0, "category": "watches", "stock": 25},
+            "1": {
+                "id": "1",
+                "name": "MacBook Pro 16",
+                "price": 2499.0,
+                "category": "laptops",
+                "stock": 15,
+            },
+            "2": {
+                "id": "2",
+                "name": "iPhone 15 Pro",
+                "price": 999.0,
+                "category": "phones",
+                "stock": 50,
+            },
+            "3": {
+                "id": "3",
+                "name": "AirPods Pro 2",
+                "price": 249.0,
+                "category": "audio",
+                "stock": 100,
+            },
+            "4": {
+                "id": "4",
+                "name": "iPad Air",
+                "price": 599.0,
+                "category": "tablets",
+                "stock": 30,
+            },
+            "5": {
+                "id": "5",
+                "name": "Apple Watch Ultra",
+                "price": 799.0,
+                "category": "watches",
+                "stock": 25,
+            },
         }
 
     @action()
@@ -66,7 +96,7 @@ class ProductsService(Service):
         limit = int(ctx.params.get("limit", "10"))
         total = len(products)
         start = (page - 1) * limit
-        products = products[start:start + limit]
+        products = products[start : start + limit]
         return {"products": products, "total": total, "page": page, "limit": limit}
 
     @action()
@@ -76,6 +106,7 @@ class ProductsService(Service):
         product = self._db.get(product_id)
         if not product:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"Product #{product_id} not found", code=404)
         return product
 
@@ -85,10 +116,12 @@ class ProductsService(Service):
         name = ctx.params.get("name")
         if not name:
             from moleculerpy.errors import ValidationError
+
             raise ValidationError("Product name is required", field="name")
         price = ctx.params.get("price")
         if not price:
             from moleculerpy.errors import ValidationError
+
             raise ValidationError("Price is required", field="price")
         new_id = str(self._next_id)
         self._next_id += 1
@@ -109,6 +142,7 @@ class ProductsService(Service):
         product = self._db.get(product_id)
         if not product:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"Product #{product_id} not found", code=404)
         for key in ("name", "price", "category", "stock"):
             if key in ctx.params and key != "id":
@@ -127,6 +161,7 @@ class ProductsService(Service):
         product = self._db.pop(product_id, None)
         if not product:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"Product #{product_id} not found", code=404)
         return {"deleted": product}
 
@@ -136,6 +171,7 @@ class ProductsService(Service):
         q = ctx.params.get("q", "").lower()
         if not q:
             from moleculerpy.errors import ValidationError
+
             raise ValidationError("Search query 'q' is required")
         results = [p for p in self._db.values() if q in p["name"].lower()]
         return {"results": results, "query": q, "count": len(results)}
@@ -144,6 +180,7 @@ class ProductsService(Service):
 # ---------------------------------------------------------------------------
 # Service 2: OrdersService — заказы (вызывает products для проверки)
 # ---------------------------------------------------------------------------
+
 
 class OrdersService(Service):
     name = "orders"
@@ -160,9 +197,11 @@ class OrdersService(Service):
         quantity = int(ctx.params.get("quantity", "1"))
         if not product_id:
             from moleculerpy.errors import ValidationError
+
             raise ValidationError("productId is required")
         if quantity < 1:
             from moleculerpy.errors import ValidationError
+
             raise ValidationError("Quantity must be >= 1")
 
         # Inter-service call: verify product exists and get price
@@ -171,6 +210,7 @@ class OrdersService(Service):
         # Check stock
         if product["stock"] < quantity:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(
                 f"Insufficient stock: {product['stock']} available, {quantity} requested",
                 code=409,
@@ -198,6 +238,7 @@ class OrdersService(Service):
         order = self._orders.get(order_id)
         if not order:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"Order #{order_id} not found", code=404)
         return order
 
@@ -215,6 +256,7 @@ class OrdersService(Service):
 # ---------------------------------------------------------------------------
 # Service 3: AnalyticsService — метрики и статистика
 # ---------------------------------------------------------------------------
+
 
 class AnalyticsService(Service):
     name = "analytics"
@@ -260,6 +302,7 @@ class AnalyticsService(Service):
 # ---------------------------------------------------------------------------
 # Gateway Configuration
 # ---------------------------------------------------------------------------
+
 
 def create_gateway(broker: Broker) -> ApiGatewayService:
     """Create API Gateway with all routes."""
@@ -307,6 +350,7 @@ def create_gateway(broker: Broker) -> ApiGatewayService:
 # Main
 # ---------------------------------------------------------------------------
 
+
 async def main() -> None:
     settings = Settings(
         transporter="nats://localhost:4222",
@@ -342,7 +386,7 @@ async def main() -> None:
     print('    curl "localhost:3000/api/v1/products"')
     print('    curl "localhost:3000/api/v1/products/1"')
     print('    curl "localhost:3000/api/v1/products?category=laptops"')
-    print('    curl -X POST localhost:3000/api/v1/orders \\')
+    print("    curl -X POST localhost:3000/api/v1/orders \\")
     print('      -H "Content-Type: application/json" \\')
     print('      -d \'{"productId":"1","quantity":2}\'')
     print('    curl "localhost:3000/api/v1/analytics/summary"')
@@ -352,6 +396,7 @@ async def main() -> None:
     print("=" * 65 + "\n")
 
     import uvicorn
+
     config = uvicorn.Config(gateway.app, host="127.0.0.1", port=3000, log_level="warning")
     server = uvicorn.Server(config)
 

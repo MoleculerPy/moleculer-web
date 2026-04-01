@@ -52,7 +52,9 @@ def check(name: str, condition: bool, detail: str = "") -> None:
         errors.append(f"{name}: {detail}")
 
 
-async def timed_request(client: httpx.AsyncClient, method: str, url: str, **kwargs: object) -> httpx.Response:
+async def timed_request(
+    client: httpx.AsyncClient, method: str, url: str, **kwargs: object
+) -> httpx.Response:
     """Execute request and track timing."""
     start = time.perf_counter()
     r = await client.request(method, url, **kwargs)
@@ -63,7 +65,6 @@ async def timed_request(client: httpx.AsyncClient, method: str, url: str, **kwar
 
 async def run_all_tests() -> None:
     async with httpx.AsyncClient(timeout=15.0) as c:
-
         # =================================================================
         print("\n\033[1m[1] HEALTH & CONNECTIVITY\033[0m")
         # =================================================================
@@ -87,9 +88,17 @@ async def run_all_tests() -> None:
         check("2.2 get product #1", r.status_code == 200 and r.json()["name"] == "MacBook Pro 16")
 
         # Create product
-        r = await timed_request(c, "POST", f"{API}/products", json={
-            "name": "HomePod Mini", "price": 99.0, "category": "audio", "stock": 200,
-        })
+        r = await timed_request(
+            c,
+            "POST",
+            f"{API}/products",
+            json={
+                "name": "HomePod Mini",
+                "price": 99.0,
+                "category": "audio",
+                "stock": 200,
+            },
+        )
         check("2.3 create product → 200", r.status_code == 200)
         new_id = r.json().get("id")
         check("2.3 has new ID", new_id is not None)
@@ -113,10 +122,14 @@ async def run_all_tests() -> None:
 
         # Filter by category
         r = await timed_request(c, "GET", f"{API}/products", params={"category": "audio"})
-        check("3.1 filter category=audio", all(p["category"] == "audio" for p in r.json()["products"]))
+        check(
+            "3.1 filter category=audio", all(p["category"] == "audio" for p in r.json()["products"])
+        )
 
         # Price range
-        r = await timed_request(c, "GET", f"{API}/products", params={"min_price": "500", "max_price": "1000"})
+        r = await timed_request(
+            c, "GET", f"{API}/products", params={"min_price": "500", "max_price": "1000"}
+        )
         products = r.json()["products"]
         check("3.2 price range 500-1000", all(500 <= p["price"] <= 1000 for p in products))
 
@@ -144,7 +157,9 @@ async def run_all_tests() -> None:
         # Create order (calls products.get internally)
         r = await timed_request(c, "POST", f"{API}/orders", json={"productId": "1", "quantity": 2})
         check("4.1 create order → 200", r.status_code == 200)
-        check("4.1 has productName from products.get", r.json().get("productName") == "MacBook Pro 16")
+        check(
+            "4.1 has productName from products.get", r.json().get("productName") == "MacBook Pro 16"
+        )
         check("4.1 total = price * quantity", r.json()["total"] == 2499.0 * 2)
         order_id = r.json().get("id")
 
@@ -157,11 +172,15 @@ async def run_all_tests() -> None:
         check("4.3 list orders", r.json()["total"] >= 1)
 
         # Order for non-existent product → error from inter-service call
-        r = await timed_request(c, "POST", f"{API}/orders", json={"productId": "99999", "quantity": 1})
+        r = await timed_request(
+            c, "POST", f"{API}/orders", json={"productId": "99999", "quantity": 1}
+        )
         check("4.4 order bad product → error", r.status_code != 200)
 
         # Order with insufficient stock
-        r = await timed_request(c, "POST", f"{API}/orders", json={"productId": "1", "quantity": 99999})
+        r = await timed_request(
+            c, "POST", f"{API}/orders", json={"productId": "1", "quantity": 99999}
+        )
         check("4.5 insufficient stock → error", r.status_code != 200)
 
         # =================================================================
@@ -185,7 +204,9 @@ async def run_all_tests() -> None:
         # Missing name
         r = await timed_request(c, "POST", f"{API}/products", json={"price": 100})
         check("6.1 no name → 422", r.status_code == 422)
-        check("6.1 error is UnprocessableEntityError", r.json()["name"] == "UnprocessableEntityError")
+        check(
+            "6.1 error is UnprocessableEntityError", r.json()["name"] == "UnprocessableEntityError"
+        )
 
         # Missing price
         r = await timed_request(c, "POST", f"{API}/products", json={"name": "Test"})
@@ -216,15 +237,23 @@ async def run_all_tests() -> None:
         check("7.2 bad product ID → error", r.status_code != 200)
 
         # Malformed JSON
-        r = await timed_request(c, "POST", f"{API}/products",
-                                content=b"{bad json", headers={"content-type": "application/json"})
+        r = await timed_request(
+            c,
+            "POST",
+            f"{API}/products",
+            content=b"{bad json",
+            headers={"content-type": "application/json"},
+        )
         check("7.3 malformed JSON → 400", r.status_code == 400)
         check("7.3 type INVALID_REQUEST_BODY", r.json()["type"] == "INVALID_REQUEST_BODY")
 
         # Error format consistency
         r = await timed_request(c, "GET", f"{API}/nonexistent")
         body = r.json()
-        check("7.4 error has all fields", all(k in body for k in ("name", "message", "code", "type", "data")))
+        check(
+            "7.4 error has all fields",
+            all(k in body for k in ("name", "message", "code", "type", "data")),
+        )
 
         # No content-type → body ignored
         r = await timed_request(c, "POST", f"{API}/products", content=b"raw data")
@@ -259,11 +288,15 @@ async def run_all_tests() -> None:
 
         # Content-Type is JSON
         r = await timed_request(c, "GET", f"{API}/products")
-        check("9.2 Content-Type: application/json", "application/json" in r.headers.get("content-type", ""))
+        check(
+            "9.2 Content-Type: application/json",
+            "application/json" in r.headers.get("content-type", ""),
+        )
 
         # Empty body POST
-        r = await timed_request(c, "POST", f"{API}/products",
-                                content=b"", headers={"content-type": "application/json"})
+        r = await timed_request(
+            c, "POST", f"{API}/products", content=b"", headers={"content-type": "application/json"}
+        )
         check("9.3 empty JSON body → validation (no name)", r.status_code == 422)
 
         # Multiple orders (workflow test)
@@ -288,7 +321,7 @@ async def main() -> None:
             stderr=subprocess.STDOUT,
         )
         # Wait for server to be ready
-        for i in range(20):
+        for _i in range(20):
             try:
                 async with httpx.AsyncClient(timeout=1.0) as c:
                     r = await c.get(f"{API}/health")
@@ -333,7 +366,9 @@ async def main() -> None:
     p50 = sorted(t[1] for t in timings)[len(timings) // 2] if timings else 0
     p99 = sorted(t[1] for t in timings)[int(len(timings) * 0.99)] if timings else 0
 
-    print(f"\n  avg: {avg:.1f}ms | p50: {p50:.1f}ms | p99: {p99:.1f}ms | total requests: {len(timings)}")
+    print(
+        f"\n  avg: {avg:.1f}ms | p50: {p50:.1f}ms | p99: {p99:.1f}ms | total requests: {len(timings)}"
+    )
 
     # Summary
     print("\n" + "=" * 65)

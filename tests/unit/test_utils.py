@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from moleculerpy_web.alias import colon_to_brace
 from moleculerpy_web.utils import (
+    check_etag_match,
+    generate_etag,
     normalize_path,
     parse_alias_pattern,
     url_path_to_action,
@@ -82,3 +84,45 @@ class TestUrlPathToAction:
 
     def test_single_segment(self) -> None:
         assert url_path_to_action("/api/health", "/api") == "health"
+
+
+class TestGenerateEtag:
+    def test_deterministic(self) -> None:
+        """Same content should produce same ETag."""
+        assert generate_etag(b"hello") == generate_etag(b"hello")
+
+    def test_different_content(self) -> None:
+        """Different content should produce different ETags."""
+        assert generate_etag(b"hello") != generate_etag(b"world")
+
+    def test_weak_format(self) -> None:
+        """ETag should be in W/"..." format."""
+        etag = generate_etag(b"test")
+        assert etag.startswith('W/"')
+        assert etag.endswith('"')
+
+
+class TestCheckEtagMatch:
+    def test_exact_match(self) -> None:
+        etag = generate_etag(b"hello")
+        assert check_etag_match(etag, etag) is True
+
+    def test_no_match(self) -> None:
+        assert check_etag_match('W/"abc"', 'W/"def"') is False
+
+    def test_wildcard(self) -> None:
+        assert check_etag_match("*", 'W/"anything"') is True
+
+    def test_empty_request_etag(self) -> None:
+        assert check_etag_match("", 'W/"abc"') is False
+
+    def test_multiple_etags(self) -> None:
+        """Comma-separated ETags should be checked individually."""
+        target = 'W/"abc"'
+        assert check_etag_match('W/"xyz", W/"abc", W/"def"', target) is True
+        assert check_etag_match('W/"xyz", W/"def"', target) is False
+
+    def test_weak_comparison(self) -> None:
+        """W/ prefix should be stripped for weak comparison."""
+        assert check_etag_match('"abc"', 'W/"abc"') is True
+        assert check_etag_match('W/"abc"', '"abc"') is True

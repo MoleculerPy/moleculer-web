@@ -39,6 +39,7 @@ async def main() -> None:
                 user = users.get(params.get("id", ""))
                 if not user:
                     from moleculerpy.errors import ServiceNotFoundError
+
                     raise ServiceNotFoundError(f"User {params.get('id')} not found")
                 return user
             if action == "users.create":
@@ -47,6 +48,7 @@ async def main() -> None:
                 user = users.get(params.get("id", ""))
                 if not user:
                     from moleculerpy.errors import ServiceNotFoundError
+
                     raise ServiceNotFoundError(f"User {params.get('id')} not found")
                 user.update(params)
                 return {"updated": user}
@@ -57,6 +59,7 @@ async def main() -> None:
                 return {"status": "ok", "version": "0.1.0a1"}
 
             from moleculerpy.errors import ServiceNotFoundError
+
             raise ServiceNotFoundError(f"Action '{action}' not found")
 
     # Gateway
@@ -97,7 +100,9 @@ async def main() -> None:
     print("    curl localhost:3000/api/math/add?a=5&b=3")
     print("    curl localhost:3000/api/users")
     print("    curl localhost:3000/api/users/42")
-    print('    curl -X POST localhost:3000/api/users -H "Content-Type: application/json" -d \'{"name":"John"}\'')
+    print(
+        '    curl -X POST localhost:3000/api/users -H "Content-Type: application/json" -d \'{"name":"John"}\''
+    )
     print("    curl localhost:3000/api/nonexistent  # 404")
     print("    curl localhost:3000/api/health")
     print()
