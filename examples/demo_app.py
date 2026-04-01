@@ -193,7 +193,7 @@ class BookstoreBroker:
 
     # --- Utility ---
     async def _health_check(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "ok", "version": "0.14.1a1", "services": ["books", "authors", "reviews"]}
+        return {"status": "ok", "version": "0.1.0a1", "services": ["books", "authors", "reviews"]}
 
     async def _echo_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Echo back all received params — useful for debugging param merge."""

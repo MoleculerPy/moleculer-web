@@ -4,7 +4,7 @@ HTTP API Gateway for MoleculerPy — maps HTTP requests to Moleculer service act
 
 Python port of [moleculer-web](https://github.com/moleculerjs/moleculer-web).
 
-## Status: Alpha (v0.14.7a1)
+## Status: Alpha (v0.1.0a1)
 
 Phase 1 — Core Gateway: HTTP server, routing, aliases, error handling.
 

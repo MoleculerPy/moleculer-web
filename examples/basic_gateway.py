@@ -54,7 +54,7 @@ async def main() -> None:
                 return {"deleted": params.get("id")}
             # Health
             if action == "health.check":
-                return {"status": "ok", "version": "0.14.1a1"}
+                return {"status": "ok", "version": "0.1.0a1"}
 
             from moleculerpy.errors import ServiceNotFoundError
             raise ServiceNotFoundError(f"Action '{action}' not found")
@@ -89,7 +89,7 @@ async def main() -> None:
     gateway._app = gateway._create_app()
 
     print("\n" + "=" * 60)
-    print("  moleculerpy-web Demo Gateway v0.14.1a1")
+    print("  moleculerpy-web Demo Gateway v0.1.0a1")
     print("=" * 60)
     print("  Server: http://127.0.0.1:3000")
     print()

@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.14.1a1] - 2026-03-31
+## [0.1.0a1] - 2026-04-01
 
 ### Added
 - Initial alpha release — Phase 1 Core Gateway

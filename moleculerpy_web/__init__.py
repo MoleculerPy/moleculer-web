@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("moleculerpy-web")
 except PackageNotFoundError:
-    __version__ = "0.14.1a1"
+    __version__ = "0.1.0a1"
 
 from moleculerpy_web.access import BlacklistMiddleware, WhitelistMiddleware
 from moleculerpy_web.alias import AliasMatch, AliasResolver, generate_rest_aliases
