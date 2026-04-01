@@ -22,10 +22,10 @@ from moleculerpy.settings import Settings
 from moleculerpy_web import ApiGatewayService
 from moleculerpy_web.errors import ForbiddenError, UnauthorizedError
 
-
 # ---------------------------------------------------------------------------
 # Service 1: UsersService — CRUD via REST shorthand
 # ---------------------------------------------------------------------------
+
 
 class UsersService(Service):
     name = "users"
@@ -49,6 +49,7 @@ class UsersService(Service):
         user = self._db.get(uid)
         if not user:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"User #{uid} not found", code=404)
         return user
 
@@ -57,6 +58,7 @@ class UsersService(Service):
         name = ctx.params.get("name")
         if not name:
             from moleculerpy.errors import ValidationError
+
             raise ValidationError("Name is required")
         new_id = str(self._next_id)
         self._next_id += 1
@@ -70,6 +72,7 @@ class UsersService(Service):
         user = self._db.get(uid)
         if not user:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"User #{uid} not found", code=404)
         for k in ("name", "email", "role"):
             if k in ctx.params:
@@ -86,6 +89,7 @@ class UsersService(Service):
         user = self._db.pop(uid, None)
         if not user:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"User #{uid} not found", code=404)
         return {"deleted": user}
 
@@ -93,6 +97,7 @@ class UsersService(Service):
 # ---------------------------------------------------------------------------
 # Service 2: ProductsService
 # ---------------------------------------------------------------------------
+
 
 class ProductsService(Service):
     name = "products"
@@ -114,6 +119,7 @@ class ProductsService(Service):
         product = self._db.get(pid)
         if not product:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"Product #{pid} not found", code=404)
         return product
 
@@ -121,6 +127,7 @@ class ProductsService(Service):
 # ---------------------------------------------------------------------------
 # Service 3: AdminService — protected by auth
 # ---------------------------------------------------------------------------
+
 
 class AdminService(Service):
     name = "admin"
@@ -145,6 +152,7 @@ class AdminService(Service):
 # ---------------------------------------------------------------------------
 # Auth functions
 # ---------------------------------------------------------------------------
+
 
 async def authenticate(ctx: Any, route: Any, request: Any) -> dict[str, Any] | None:
     """Simple token-based auth. Header: Authorization: Bearer <user_id>."""
@@ -180,12 +188,14 @@ _request_log: list[dict[str, Any]] = []
 
 async def log_before_call(ctx: Any, route: Any, request: Any) -> None:
     """Log every request."""
-    _request_log.append({
-        "action": ctx.action,
-        "method": request.method,
-        "path": str(request.url.path),
-        "time": time.time(),
-    })
+    _request_log.append(
+        {
+            "action": ctx.action,
+            "method": request.method,
+            "path": str(request.url.path),
+            "time": time.time(),
+        }
+    )
 
 
 async def transform_response(ctx: Any, route: Any, request: Any, data: Any) -> Any:
@@ -198,6 +208,7 @@ async def transform_response(ctx: Any, route: Any, request: Any, data: Any) -> A
 # ---------------------------------------------------------------------------
 # Gateway Configuration
 # ---------------------------------------------------------------------------
+
 
 def create_gateway(broker: Broker) -> ApiGatewayService:
     return ApiGatewayService(
@@ -212,7 +223,7 @@ def create_gateway(broker: Broker) -> ApiGatewayService:
                     "path": "/v1",
                     "mappingPolicy": "restrict",
                     "aliases": {
-                        "REST /users": "users",       # 6 CRUD routes!
+                        "REST /users": "users",  # 6 CRUD routes!
                         "REST /products": {"action": "products", "only": ["list", "get"]},
                     },
                     "whitelist": ["users.*", "products.*"],
@@ -257,6 +268,7 @@ def create_gateway(broker: Broker) -> ApiGatewayService:
 # Main
 # ---------------------------------------------------------------------------
 
+
 async def main() -> None:
     settings = Settings(transporter="nats://localhost:4222", log_level="INFO", request_timeout=10.0)
     broker = Broker("gateway-v2", settings=settings)
@@ -287,7 +299,7 @@ async def main() -> None:
     print("  Quick test:")
     print('    curl "localhost:3000/api/v1/users"                    # REST list')
     print('    curl "localhost:3000/api/v1/users/1"                  # REST get')
-    print('    curl -X POST localhost:3000/api/v1/users \\')
+    print("    curl -X POST localhost:3000/api/v1/users \\")
     print('      -H "Content-Type: application/json" -d \'{"name":"Dave"}\'')
     print('    curl "localhost:3000/api/admin/stats" \\')
     print('      -H "Authorization: Bearer admin-token"              # Auth OK')
@@ -300,6 +312,7 @@ async def main() -> None:
     print("=" * 70 + "\n")
 
     import uvicorn
+
     config = uvicorn.Config(gateway.app, host="127.0.0.1", port=3000, log_level="warning")
     server = uvicorn.Server(config)
     try:

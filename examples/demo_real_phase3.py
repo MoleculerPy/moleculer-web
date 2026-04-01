@@ -31,7 +31,6 @@ from moleculerpy.settings import Settings
 
 from moleculerpy_web import ApiGatewayService
 
-
 # ---------------------------------------------------------------------------
 # Test Services
 # ---------------------------------------------------------------------------
@@ -167,7 +166,6 @@ async def run_demo() -> bool:
         base = "http://127.0.0.1:3210"
 
         async with httpx.AsyncClient(base_url=base, timeout=10.0) as client:
-
             # --- 1. Service Inheritance ---
             print("\n--- 1. Service Inheritance ---")
 
@@ -281,9 +279,7 @@ async def run_demo() -> bool:
                 r2 = await client.get("/api/users", headers={"If-None-Match": etag})
                 check("304 Not Modified", r2.status_code == 304)
 
-                r3 = await client.get(
-                    "/api/users", headers={"If-None-Match": 'W/"old-hash"'}
-                )
+                r3 = await client.get("/api/users", headers={"If-None-Match": 'W/"old-hash"'})
                 check("200 on stale ETag", r3.status_code == 200)
             else:
                 check("304 test (skipped — no ETag)", False, "ETag header missing")
@@ -339,7 +335,7 @@ async def run_demo() -> bool:
                     r.status_code in (400, 413),
                     f"got {r.status_code}",
                 )
-            except Exception as e:
+            except Exception:
                 # Server may close connection on oversized body
                 check("Oversized body rejected (connection closed)", True)
 
@@ -391,7 +387,10 @@ async def run_demo() -> bool:
             print("\n--- 14. Error Format ---")
 
             r = await client.get("/api/nonexistent/path")
-            check("Error returns JSON", r.headers.get("content-type", "").startswith("application/json"))
+            check(
+                "Error returns JSON",
+                r.headers.get("content-type", "").startswith("application/json"),
+            )
             err = r.json()
             check("Error has 'name' field", "name" in err)
             check("Error has 'code' field", "code" in err)

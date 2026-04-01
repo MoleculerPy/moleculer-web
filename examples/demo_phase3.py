@@ -18,7 +18,6 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -26,7 +25,6 @@ from moleculerpy import Service
 
 from moleculerpy_web.service import ApiGatewayService
 from moleculerpy_web.utils import generate_etag
-
 
 # ---------------------------------------------------------------------------
 # Smoke test (no NATS required)
@@ -161,8 +159,9 @@ async def smoke_test() -> None:
     # --- 4. Streaming ---
     print("\n--- 4. Streaming Responses ---")
 
-    from moleculerpy_web.handler import build_response
     from starlette.responses import StreamingResponse
+
+    from moleculerpy_web.handler import build_response
 
     async def async_gen():
         yield b"chunk1"
@@ -188,18 +187,20 @@ async def smoke_test() -> None:
     # --- 5. File Upload (multipart) ---
     print("\n--- 5. File Upload (multipart) ---")
 
+    import base64
+
     from starlette.applications import Starlette
     from starlette.requests import Request
     from starlette.responses import JSONResponse
     from starlette.routing import Route
     from starlette.testclient import TestClient
+
     from moleculerpy_web.parsers import parse_body
-    import base64
 
     async def echo(request: Request) -> JSONResponse:
         result = await parse_body(request)
         # Convert bytes to base64 for JSON
-        for k, v in result.items():
+        for _k, v in result.items():
             if isinstance(v, dict) and "data" in v and isinstance(v["data"], bytes):
                 v["data"] = base64.b64encode(v["data"]).decode()
         return JSONResponse(result)
@@ -248,7 +249,7 @@ async def smoke_test() -> None:
     data = {"users": [1, 2, 3]}
     body = json.dumps(data, separators=(",", ":")).encode()
     etag = generate_etag(body)
-    check("ETag format W/\"...\"", etag.startswith('W/"') and etag.endswith('"'))
+    check('ETag format W/"..."', etag.startswith('W/"') and etag.endswith('"'))
 
     # ETag with mock request
     mock_req = MagicMock()

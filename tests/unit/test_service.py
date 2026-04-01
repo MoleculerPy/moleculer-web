@@ -585,6 +585,7 @@ class TestServiceInheritance:
 
     def test_subclass_inherits_properly(self) -> None:
         """User-defined subclass should work correctly."""
+
         class MyGateway(ApiGatewayService):
             name = "my-api"
 
@@ -596,6 +597,7 @@ class TestServiceInheritance:
 
     def test_subclass_with_class_settings_and_mixins(self) -> None:
         """Subclass with mixins should merge class-level settings properly."""
+
         # Without mixins, class-level settings need explicit merge.
         # This is a known limitation of Service — class settings only auto-merge with mixins.
         # Users should pass settings via constructor or use mixins.

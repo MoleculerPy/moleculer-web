@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import subprocess
 import sys
 import time
@@ -53,7 +52,6 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 
 async def run_all_tests() -> None:
     async with httpx.AsyncClient(timeout=10.0) as c:
-
         # =====================================================================
         # 1. ROUTING
         # =====================================================================
@@ -105,8 +103,9 @@ async def run_all_tests() -> None:
         check("2.3 reviews returned", len(r.json()["reviews"]) == 1)
 
         # 2.4 POST with path param
-        r = await c.post(f"{API}/books/2/reviews",
-                         json={"user": "Dave", "rating": 5, "text": "Amazing"})
+        r = await c.post(
+            f"{API}/books/2/reviews", json={"user": "Dave", "rating": 5, "text": "Amazing"}
+        )
         check("2.4 POST /books/2/reviews → add review", r.status_code == 200)
         check("2.4 bookId passed from path", r.json()["bookId"] == "2")
 
@@ -150,17 +149,33 @@ async def run_all_tests() -> None:
         check("4.1 GET works", r.status_code == 200)
 
         # 4.2 POST with JSON
-        r = await c.post(f"{API}/books", json={"title": "Neuromancer", "author": "William Gibson", "year": 1984, "genre": "cyberpunk"})
-        check("4.2 POST creates book", r.status_code == 200 and r.json()["created"]["title"] == "Neuromancer")
+        r = await c.post(
+            f"{API}/books",
+            json={
+                "title": "Neuromancer",
+                "author": "William Gibson",
+                "year": 1984,
+                "genre": "cyberpunk",
+            },
+        )
+        check(
+            "4.2 POST creates book",
+            r.status_code == 200 and r.json()["created"]["title"] == "Neuromancer",
+        )
         new_id = r.json()["created"]["id"]
 
         # 4.3 PUT update
         r = await c.put(f"{API}/books/{new_id}", json={"price": 14.99})
-        check("4.3 PUT updates book", r.status_code == 200 and r.json()["updated"]["price"] == 14.99)
+        check(
+            "4.3 PUT updates book", r.status_code == 200 and r.json()["updated"]["price"] == 14.99
+        )
 
         # 4.4 PATCH update (same endpoint)
         r = await c.patch(f"{API}/books/{new_id}", json={"genre": "sci-fi"})
-        check("4.4 PATCH updates book", r.status_code == 200 and r.json()["updated"]["genre"] == "sci-fi")
+        check(
+            "4.4 PATCH updates book",
+            r.status_code == 200 and r.json()["updated"]["genre"] == "sci-fi",
+        )
 
         # 4.5 DELETE
         r = await c.delete(f"{API}/books/{new_id}")
@@ -181,7 +196,9 @@ async def run_all_tests() -> None:
         check("5.2 empty JSON body → empty params", r.status_code == 200)
 
         # 5.3 Malformed JSON → 400
-        r = await c.post(f"{API}/echo", content=b"{invalid json", headers={"content-type": "application/json"})
+        r = await c.post(
+            f"{API}/echo", content=b"{invalid json", headers={"content-type": "application/json"}
+        )
         check("5.3 malformed JSON → 400", r.status_code == 400)
         check("5.3 error type INVALID_REQUEST_BODY", r.json()["type"] == "INVALID_REQUEST_BODY")
 
@@ -204,17 +221,18 @@ async def run_all_tests() -> None:
 
         # 6.2 Query params added to path params
         r = await c.get(f"{API}/books/1/reviews", params={"extra": "info"})
-        check("6.2 path(bookId) + query(extra) both present",
-              r.json()["bookId"] == "1")
+        check("6.2 path(bookId) + query(extra) both present", r.json()["bookId"] == "1")
 
         # 6.3 Body overrides query
         r = await c.post(f"{API}/echo", params={"key": "from_query"}, json={"key": "from_body"})
         check("6.3 body overrides query", r.json()["received_params"]["key"] == "from_body")
 
         # 6.4 Path + query + body all merged
-        r = await c.post(f"{API}/books/1/reviews",
-                         params={"extra": "query_val"},
-                         json={"user": "Test", "rating": 3, "text": "OK"})
+        r = await c.post(
+            f"{API}/books/1/reviews",
+            params={"extra": "query_val"},
+            json={"user": "Test", "rating": 3, "text": "OK"},
+        )
         check("6.4 POST path+query+body → 200", r.status_code == 200)
 
         # =====================================================================
@@ -236,7 +254,9 @@ async def run_all_tests() -> None:
         check("7.3 error name", r.json()["name"] == "UnprocessableEntityError")
 
         # 7.4 400 — malformed body
-        r = await c.post(f"{API}/books", content=b"not json", headers={"content-type": "application/json"})
+        r = await c.post(
+            f"{API}/books", content=b"not json", headers={"content-type": "application/json"}
+        )
         check("7.4 malformed body → 400", r.status_code == 400)
 
         # 7.5 422 — division by zero

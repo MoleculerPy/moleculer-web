@@ -49,10 +49,7 @@ async def run_benchmark(
         # Run in batches of `concurrency`
         for batch_start in range(0, n_requests, concurrency):
             batch_size = min(concurrency, n_requests - batch_start)
-            tasks = [
-                single_request(client, batch_start + i)
-                for i in range(batch_size)
-            ]
+            tasks = [single_request(client, batch_start + i) for i in range(batch_size)]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for r in results:
                 if isinstance(r, Exception):
@@ -123,9 +120,7 @@ async def run_with_mock_server() -> None:
     gateway._build_routes()
     gateway._app = gateway._create_app()
 
-    config = uvicorn.Config(
-        gateway.app, host="127.0.0.1", port=3001, log_level="error"
-    )
+    config = uvicorn.Config(gateway.app, host="127.0.0.1", port=3001, log_level="error")
     server = uvicorn.Server(config)
 
     server_task = asyncio.create_task(server.serve())

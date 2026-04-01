@@ -15,9 +15,9 @@ from moleculerpy_web.alias import AliasResolver
 from moleculerpy_web.cors import CorsConfig
 from moleculerpy_web.errors import GatewayError, NotFoundError
 from moleculerpy_web.handler import build_response, create_error_response, handle_request
-from moleculerpy_web.utils import generate_etag
 from moleculerpy_web.ratelimit import RateLimitConfig
 from moleculerpy_web.route import RouteConfig
+from moleculerpy_web.utils import generate_etag
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -200,7 +200,9 @@ class TestBuildResponse:
         """ETag should not be calculated for non-200 responses."""
         mock_request = MagicMock()
         mock_request.headers = {}
-        resp = build_response({"error": "not found"}, status_code=404, etag=True, request=mock_request)
+        resp = build_response(
+            {"error": "not found"}, status_code=404, etag=True, request=mock_request
+        )
         assert resp.status_code == 404
         assert "ETag" not in resp.headers
 

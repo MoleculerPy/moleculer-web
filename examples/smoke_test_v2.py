@@ -39,7 +39,6 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 
 async def run_all_tests() -> None:
     async with httpx.AsyncClient(timeout=10.0) as c:
-
         # =================================================================
         print("\n\033[1m[1] REST SHORTHAND — /api/v1/users (6 CRUD routes)\033[0m")
         # =================================================================

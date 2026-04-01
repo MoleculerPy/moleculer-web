@@ -22,19 +22,47 @@ import uvicorn
 
 from moleculerpy_web import ApiGatewayService
 
-
 # ---------------------------------------------------------------------------
 # Mock Broker — имитирует реальный broker с несколькими сервисами
 # ---------------------------------------------------------------------------
+
 
 class BookstoreBroker:
     """Mock broker simulating a bookstore microservices cluster."""
 
     _books: dict[str, dict[str, Any]] = {
-        "1": {"id": "1", "title": "Dune", "author": "Frank Herbert", "year": 1965, "genre": "sci-fi", "price": 12.99},
-        "2": {"id": "2", "title": "1984", "author": "George Orwell", "year": 1949, "genre": "dystopia", "price": 9.99},
-        "3": {"id": "3", "title": "Foundation", "author": "Isaac Asimov", "year": 1951, "genre": "sci-fi", "price": 11.50},
-        "42": {"id": "42", "title": "Hitchhiker's Guide", "author": "Douglas Adams", "year": 1979, "genre": "comedy", "price": 8.99},
+        "1": {
+            "id": "1",
+            "title": "Dune",
+            "author": "Frank Herbert",
+            "year": 1965,
+            "genre": "sci-fi",
+            "price": 12.99,
+        },
+        "2": {
+            "id": "2",
+            "title": "1984",
+            "author": "George Orwell",
+            "year": 1949,
+            "genre": "dystopia",
+            "price": 9.99,
+        },
+        "3": {
+            "id": "3",
+            "title": "Foundation",
+            "author": "Isaac Asimov",
+            "year": 1951,
+            "genre": "sci-fi",
+            "price": 11.50,
+        },
+        "42": {
+            "id": "42",
+            "title": "Hitchhiker's Guide",
+            "author": "Douglas Adams",
+            "year": 1979,
+            "genre": "comedy",
+            "price": 8.99,
+        },
     }
 
     _authors: dict[str, dict[str, Any]] = {
@@ -45,7 +73,10 @@ class BookstoreBroker:
 
     _reviews: dict[str, list[dict[str, Any]]] = {
         "1": [{"user": "Alice", "rating": 5, "text": "Masterpiece!"}],
-        "2": [{"user": "Bob", "rating": 4, "text": "Chilling"}, {"user": "Carol", "rating": 5, "text": "Prophetic"}],
+        "2": [
+            {"user": "Bob", "rating": 4, "text": "Chilling"},
+            {"user": "Carol", "rating": 5, "text": "Prophetic"},
+        ],
     }
 
     async def call(self, action: str, params: dict[str, Any] | None = None) -> Any:
@@ -78,6 +109,7 @@ class BookstoreBroker:
         handler = handlers.get(action)
         if not handler:
             from moleculerpy.errors import ServiceNotFoundError
+
             raise ServiceNotFoundError(action)
         return await handler(params)
 
@@ -105,7 +137,7 @@ class BookstoreBroker:
         limit = int(params.get("limit", "10"))
         total = len(books)
         offset = (page - 1) * limit
-        books = books[offset:offset + limit]
+        books = books[offset : offset + limit]
         return {"books": books, "total": total, "page": page, "limit": limit}
 
     async def _books_get(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -113,6 +145,7 @@ class BookstoreBroker:
         book = self._books.get(book_id)
         if not book:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"Book #{book_id} not found", code=404)
         return book
 
@@ -120,14 +153,21 @@ class BookstoreBroker:
         # Validation
         if not params.get("title"):
             from moleculerpy.errors import ValidationError
+
             raise ValidationError("Title is required", field="title")
         if not params.get("author"):
             from moleculerpy.errors import ValidationError
+
             raise ValidationError("Author is required", field="author")
         new_id = str(max(int(k) for k in self._books) + 1)
-        book = {"id": new_id, "title": params["title"], "author": params["author"],
-                "year": int(params.get("year", 2024)), "genre": params.get("genre", "unknown"),
-                "price": float(params.get("price", 0))}
+        book = {
+            "id": new_id,
+            "title": params["title"],
+            "author": params["author"],
+            "year": int(params.get("year", 2024)),
+            "genre": params.get("genre", "unknown"),
+            "price": float(params.get("price", 0)),
+        }
         self._books[new_id] = book
         return {"created": book}
 
@@ -136,10 +176,15 @@ class BookstoreBroker:
         book = self._books.get(book_id)
         if not book:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"Book #{book_id} not found", code=404)
         for key in ("title", "author", "year", "genre", "price"):
             if key in params and key != "id":
-                book[key] = int(params[key]) if key == "year" else (float(params[key]) if key == "price" else params[key])
+                book[key] = (
+                    int(params[key])
+                    if key == "year"
+                    else (float(params[key]) if key == "price" else params[key])
+                )
         return {"updated": book}
 
     async def _books_remove(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -147,6 +192,7 @@ class BookstoreBroker:
         book = self._books.pop(book_id, None)
         if not book:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"Book #{book_id} not found", code=404)
         return {"deleted": book}
 
@@ -154,9 +200,11 @@ class BookstoreBroker:
         q = params.get("q", "").lower()
         if not q:
             from moleculerpy.errors import ValidationError
+
             raise ValidationError("Search query 'q' is required")
-        results = [b for b in self._books.values()
-                   if q in b["title"].lower() or q in b["author"].lower()]
+        results = [
+            b for b in self._books.values() if q in b["title"].lower() or q in b["author"].lower()
+        ]
         return {"results": results, "query": q, "count": len(results)}
 
     # --- Authors ---
@@ -168,6 +216,7 @@ class BookstoreBroker:
         author = self._authors.get(author_id)
         if not author:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"Author #{author_id} not found", code=404)
         return author
 
@@ -181,13 +230,17 @@ class BookstoreBroker:
         book_id = params.get("bookId", "")
         if book_id not in self._books:
             from moleculerpy.errors import MoleculerClientError
+
             raise MoleculerClientError(f"Book #{book_id} not found", code=404)
         if not params.get("rating"):
             from moleculerpy.errors import ValidationError
+
             raise ValidationError("Rating is required")
-        review = {"user": params.get("user", "Anonymous"),
-                  "rating": int(params["rating"]),
-                  "text": params.get("text", "")}
+        review = {
+            "user": params.get("user", "Anonymous"),
+            "rating": int(params["rating"]),
+            "text": params.get("text", ""),
+        }
         self._reviews.setdefault(book_id, []).append(review)
         return {"added": review, "bookId": book_id}
 
@@ -227,9 +280,11 @@ class BookstoreBroker:
         if op == "div":
             if b == 0:
                 from moleculerpy.errors import ValidationError
+
                 raise ValidationError("Division by zero")
             return {"result": a / b, "op": op}
         from moleculerpy.errors import ValidationError
+
         raise ValidationError(f"Unknown operation: {op}")
 
     async def _slow_action(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -241,6 +296,7 @@ class BookstoreBroker:
 # ---------------------------------------------------------------------------
 # Gateway Configuration — multiple routes with different policies
 # ---------------------------------------------------------------------------
+
 
 def create_gateway() -> ApiGatewayService:
     """Create gateway with realistic multi-route configuration."""
@@ -299,6 +355,7 @@ def create_gateway() -> ApiGatewayService:
 # ---------------------------------------------------------------------------
 # Run server
 # ---------------------------------------------------------------------------
+
 
 async def main() -> None:
     gateway = create_gateway()

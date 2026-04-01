@@ -8,7 +8,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from moleculerpy_web.parsers import _sanitize_filename, parse_body, parse_multipart
+from moleculerpy_web.parsers import _sanitize_filename, parse_body
 
 
 def _make_json_safe(obj: Any) -> Any:
