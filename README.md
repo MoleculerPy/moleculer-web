@@ -25,7 +25,14 @@ Python port of [moleculer-web](https://github.com/moleculerjs/moleculer-web).
 - **Whitelist/Blacklist** — Action access control with fnmatch wildcards + regex
 - **Error Mapping** — MoleculerError hierarchy → HTTP status codes (400-504)
 - **ctx.meta Passthrough** — `$statusCode`, `$responseHeaders`, `$responseType`, `$location`
-- **Security** — Path traversal, SSRF, open redirect protection, body size limit
+- **Service Inheritance** — `ApiGatewayService(Service)` with full broker integration
+- **Internal Actions** — `api.listAliases`, `api.addRoute`, `api.removeRoute`
+- **Auto-aliases** — `$services.changed` event + action `rest` annotations
+- **Streaming** — Async/sync generators → `StreamingResponse`
+- **File Upload** — Multipart/form-data with filename sanitization
+- **Static Files** — Starlette `StaticFiles` mount via `settings.assets`
+- **ETag + 304** — Conditional GET with `If-None-Match` support
+- **Security** — Path traversal, SSRF, open redirect, CRLF injection, body size limits
 - **Type-Safe** — Full type hints with mypy strict mode
 
 ---
@@ -242,6 +249,13 @@ python examples/smoke_test_v2.py
 | Rate limiting | ✅ | ✅ |
 | Whitelist/blacklist | ✅ | ✅ |
 | ctx.meta passthrough | ✅ | ✅ |
+| Service inheritance | ✅ | ✅ |
+| Internal actions (listAliases) | ✅ | ✅ |
+| Auto-aliases ($services.changed) | ✅ | ✅ |
+| Streaming responses | ✅ | ✅ |
+| File upload (multipart) | ✅ | ✅ |
+| Static file serving | ✅ | ✅ |
+| ETag / conditional GET | ✅ | ✅ |
 | Param merge order | body < query < path | ✅ Same |
 | Error format | ✅ | ✅ Same |
 | Mapping policy | default: `all` | default: `restrict` (secure) |
