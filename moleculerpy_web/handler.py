@@ -43,11 +43,17 @@ except ImportError:
 _rate_limit_stores: dict[int, MemoryStore] = {}
 
 
-def _get_or_create_store(config: RateLimitConfig) -> MemoryStore:
-    """Get or create a MemoryStore for the given rate limit config."""
+async def _get_or_create_store(config: RateLimitConfig) -> MemoryStore:
+    """Get or create a MemoryStore for the given rate limit config.
+
+    Store is started automatically on first creation (reset loop begins).
+    Keyed by id(config) — safe as long as config is kept alive by RouteConfig.
+    """
     key = id(config)
     if key not in _rate_limit_stores:
-        _rate_limit_stores[key] = MemoryStore(config.window)
+        store = MemoryStore(config.window)
+        await store.start()
+        _rate_limit_stores[key] = store
     return _rate_limit_stores[key]
 
 
@@ -211,7 +217,12 @@ async def handle_request(
 
         class _BeforeCallMW:
             async def __call__(self, ctx: RequestContext, next_handler: NextHandler) -> Response:
-                await _before_call(ctx, route_config, ctx.request)
+                try:
+                    await _before_call(ctx, route_config, ctx.request)
+                except GatewayError:
+                    raise
+                except Exception as exc:
+                    raise InternalServerError("Hook onBeforeCall failed") from exc
                 return await next_handler(ctx)
 
         middlewares.append(_BeforeCallMW())
@@ -224,7 +235,31 @@ async def handle_request(
     if route_config.blacklist:
         middlewares.append(BlacklistMiddleware(route_config.blacklist))
 
-    # Rate limit
+    # Authentication (before rate limit — Node.js order)
+    if route_config.authentication:
+        _auth_fn = route_config.authentication
+
+        class _AuthMW:
+            async def __call__(self, ctx: RequestContext, next_handler: NextHandler) -> Response:
+                user = await _auth_fn(ctx, route_config, ctx.request)
+                ctx.user = user
+                ctx.meta["user"] = user
+                return await next_handler(ctx)
+
+        middlewares.append(_AuthMW())
+
+    # Authorization (after authentication)
+    if route_config.authorization:
+        _authz_fn = route_config.authorization
+
+        class _AuthzMW:
+            async def __call__(self, ctx: RequestContext, next_handler: NextHandler) -> Response:
+                await _authz_fn(ctx, route_config, ctx.request)
+                return await next_handler(ctx)
+
+        middlewares.append(_AuthzMW())
+
+    # Rate limit (after auth — Node.js order: can use ctx.user for per-user limits)
     if route_config.rate_limit:
         _rl_config = route_config.rate_limit
 
@@ -233,7 +268,7 @@ async def handle_request(
                 key_fn = _rl_config.key if _rl_config.key is not None else default_key_extractor
                 key = key_fn(ctx.request)
                 if key:
-                    store = _get_or_create_store(_rl_config)
+                    store = await _get_or_create_store(_rl_config)
                     count = await store.increment(key)
                     remaining = _rl_config.limit - count
                     if _rl_config.headers:
@@ -248,30 +283,6 @@ async def handle_request(
 
         middlewares.append(_RateLimitMW())
 
-    # Authentication
-    if route_config.authentication:
-        _auth_fn = route_config.authentication
-
-        class _AuthMW:
-            async def __call__(self, ctx: RequestContext, next_handler: NextHandler) -> Response:
-                user = await _auth_fn(ctx, route_config, ctx.request)
-                ctx.user = user
-                ctx.meta["user"] = user
-                return await next_handler(ctx)
-
-        middlewares.append(_AuthMW())
-
-    # Authorization
-    if route_config.authorization:
-        _authz_fn = route_config.authorization
-
-        class _AuthzMW:
-            async def __call__(self, ctx: RequestContext, next_handler: NextHandler) -> Response:
-                await _authz_fn(ctx, route_config, ctx.request)
-                return await next_handler(ctx)
-
-        middlewares.append(_AuthzMW())
-
     # Terminal handler: broker.call + onAfterCall + build_response
     async def call_action(ctx: RequestContext) -> Response:
         try:
@@ -285,7 +296,12 @@ async def handle_request(
 
         # onAfterCall hook — can modify data
         if route_config.on_after_call:
-            result = await route_config.on_after_call(ctx, route_config, ctx.request, result)
+            try:
+                result = await route_config.on_after_call(ctx, route_config, ctx.request, result)
+            except GatewayError:
+                raise
+            except Exception as exc:
+                raise InternalServerError("Hook onAfterCall failed") from exc
 
         # Build response with ctx.meta overrides
         raw_status = ctx.meta.get("$statusCode", 200)
