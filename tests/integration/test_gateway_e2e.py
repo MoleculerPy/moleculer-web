@@ -486,27 +486,21 @@ class TestRateLimitE2E:
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             yield c
 
-    async def test_rate_limit_headers_present(
-        self, client_rl: AsyncClient
-    ) -> None:
+    async def test_rate_limit_headers_present(self, client_rl: AsyncClient) -> None:
         """First request should include rate limit headers."""
         resp = await client_rl.get("/api/users")
         assert resp.status_code == 200
         assert "x-rate-limit-limit" in resp.headers
         assert resp.headers["x-rate-limit-limit"] == "2"
 
-    async def test_rate_limit_exceeded_returns_429(
-        self, client_rl: AsyncClient
-    ) -> None:
+    async def test_rate_limit_exceeded_returns_429(self, client_rl: AsyncClient) -> None:
         """Third request on limit=2 should return 429."""
         await client_rl.get("/api/users")  # 1
         await client_rl.get("/api/users")  # 2
         resp = await client_rl.get("/api/users")  # 3 → exceeded
         assert resp.status_code == 429
 
-    async def test_rate_limit_remaining_decrements(
-        self, client_rl: AsyncClient
-    ) -> None:
+    async def test_rate_limit_remaining_decrements(self, client_rl: AsyncClient) -> None:
         """Remaining header should decrement with each request."""
         r1 = await client_rl.get("/api/users")
         r2 = await client_rl.get("/api/users")
