@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 from typing import Any
 
 import uvicorn
@@ -32,10 +31,7 @@ from moleculerpy_web.alias import (
 from moleculerpy_web.errors import GatewayError, NotFoundError
 from moleculerpy_web.handler import create_error_response, handle_request
 from moleculerpy_web.route import RouteConfig, parse_route_config
-from moleculerpy_web.utils import normalize_path, parse_alias_pattern
-
-# Compiled regex for valid Moleculer action names (shared with handler.py)
-_VALID_ACTION_RE = re.compile(r"^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)+$")
+from moleculerpy_web.utils import VALID_ACTION_RE, normalize_path, parse_alias_pattern
 
 
 def _build_resolver(route_config: RouteConfig) -> AliasResolver:
@@ -114,6 +110,7 @@ class ApiGatewayService(Service):
         self._server_task: asyncio.Task[None] | None = None
         self._server: uvicorn.Server | None = None
         self._routes: list[tuple[RouteConfig, AliasResolver]] = []
+        self._rate_limit_stores: dict[tuple[str, float, int], Any] = {}
 
     @property
     def port(self) -> int:
@@ -192,6 +189,7 @@ class ApiGatewayService(Service):
                     alias_resolver=resolver,
                     route_config=route_config,
                     base_path=self.base_path,
+                    rate_limit_stores=self._rate_limit_stores,
                 )
             except NotFoundError:
                 continue  # Route not matched — try next
@@ -243,6 +241,11 @@ class ApiGatewayService(Service):
 
     async def stopped(self) -> None:
         """Lifecycle: called when broker stops. Graceful HTTP server shutdown."""
+        # Stop all rate limit stores (prevents asyncio task leak)
+        for store in self._rate_limit_stores.values():
+            await store.stop()
+        self._rate_limit_stores.clear()
+
         if self._server is not None:
             self._server.should_exit = True
         if self._server_task is not None:
@@ -415,7 +418,7 @@ class ApiGatewayService(Service):
                     continue
 
                 # Security: validate action name (OWASP A01)
-                if not _VALID_ACTION_RE.match(act_name):
+                if not VALID_ACTION_RE.match(act_name):
                     continue
 
                 # Security: apply whitelist/blacklist filters (OWASP A01)

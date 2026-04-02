@@ -4,6 +4,9 @@ import hashlib
 import posixpath
 import re
 
+# Compiled regex for valid Moleculer action names (e.g., "users.list", "v1.math.add")
+VALID_ACTION_RE = re.compile(r"^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)+$")
+
 
 def normalize_path(path: str) -> str:
     """Normalize URL path: resolve ./.., ensure leading /, remove trailing /, collapse //.

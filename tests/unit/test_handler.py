@@ -541,6 +541,8 @@ def _make_pipeline_app(
     base_path: str = "/api",
 ) -> Starlette:
     """Create a Starlette app using RouteConfig-based pipeline."""
+    # Shared rate limit stores dict (simulates Service instance ownership)
+    rate_limit_stores: dict = {}
 
     async def catch_all(request: Request) -> Any:
         try:
@@ -550,6 +552,7 @@ def _make_pipeline_app(
                 alias_resolver=alias_resolver,
                 route_config=route_config,
                 base_path=base_path,
+                rate_limit_stores=rate_limit_stores,
             )
         except GatewayError as e:
             return await create_error_response(e)
