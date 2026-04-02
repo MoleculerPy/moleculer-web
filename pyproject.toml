@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "moleculerpy-web"
-version = "0.1.0b1"
+version = "0.1.0"
 description = "HTTP API Gateway for MoleculerPy — maps HTTP requests to Moleculer service actions"
 readme = "README.md"
 license = "MIT"
@@ -17,7 +17,7 @@ maintainers = [
 ]
 keywords = ["moleculer", "api-gateway", "http", "microservices", "starlette", "asgi"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
