@@ -396,6 +396,48 @@ class TestLifecycle:
 
         assert gateway._server_task is None
 
+    async def test_stopped_calls_stop_on_all_rate_limit_stores(self) -> None:
+        """stopped() must call stop() on every store in _rate_limit_stores."""
+        gateway = ApiGatewayService(broker=MagicMock(), settings={"routes": []})
+        gateway._server = None
+        gateway._server_task = None
+
+        mock_store_a = AsyncMock()
+        mock_store_b = AsyncMock()
+        gateway._rate_limit_stores[("/api/v1", 60.0, 10)] = mock_store_a
+        gateway._rate_limit_stores[("/api/v2", 30.0, 5)] = mock_store_b
+
+        await gateway.stopped()
+
+        mock_store_a.stop.assert_awaited_once()
+        mock_store_b.stop.assert_awaited_once()
+        assert gateway._rate_limit_stores == {}
+
+    async def test_stopped_with_no_stores_is_safe(self) -> None:
+        """stopped() must not raise when _rate_limit_stores is empty."""
+        gateway = ApiGatewayService(broker=MagicMock(), settings={"routes": []})
+        gateway._server = None
+        gateway._server_task = None
+        assert gateway._rate_limit_stores == {}
+        await gateway.stopped()
+
+
+class TestRateLimitStoreIsolation:
+    """Verify stores are per-instance, not shared globally."""
+
+    def test_stores_are_per_instance(self) -> None:
+        """Each ApiGatewayService must have its own _rate_limit_stores dict."""
+        gw1 = ApiGatewayService(broker=MagicMock(), settings={"routes": []})
+        gw2 = ApiGatewayService(broker=MagicMock(), settings={"routes": []})
+        assert gw1._rate_limit_stores is not gw2._rate_limit_stores
+
+    def test_store_added_to_one_not_visible_in_other(self) -> None:
+        """Populating stores on one gateway must not affect another."""
+        gw1 = ApiGatewayService(broker=MagicMock(), settings={"routes": []})
+        gw2 = ApiGatewayService(broker=MagicMock(), settings={"routes": []})
+        gw1._rate_limit_stores[("/", 60.0, 10)] = MagicMock()
+        assert len(gw2._rate_limit_stores) == 0
+
 
 # ---------------------------------------------------------------------------
 # Bug fix regression tests

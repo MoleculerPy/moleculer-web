@@ -313,8 +313,13 @@ async def handle_request(
                 key_fn = _rl_config.key if _rl_config.key is not None else default_key_extractor
                 key = key_fn(ctx.request)
                 if key:
-                    _stores = rate_limit_stores if rate_limit_stores is not None else {}
-                    store = await _get_or_create_store(_rl_config, effective_route_path, _stores)
+                    if rate_limit_stores is None:
+                        raise InternalServerError(
+                            "rate_limit_stores not provided to handle_request"
+                        )
+                    store = await _get_or_create_store(
+                        _rl_config, effective_route_path, rate_limit_stores
+                    )
                     count = await store.increment(key)
                     remaining = _rl_config.limit - count
                     if _rl_config.headers:
