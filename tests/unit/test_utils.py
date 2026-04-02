@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from moleculerpy_web.alias import colon_to_brace
 from moleculerpy_web.utils import (
+    VALID_ACTION_RE,
     check_etag_match,
     generate_etag,
     normalize_path,
@@ -126,3 +127,34 @@ class TestCheckEtagMatch:
         """W/ prefix should be stripped for weak comparison."""
         assert check_etag_match('"abc"', 'W/"abc"') is True
         assert check_etag_match('W/"abc"', '"abc"') is True
+
+
+class TestValidActionRe:
+    """Direct tests for VALID_ACTION_RE (security boundary, OWASP A01)."""
+
+    def test_valid_service_action(self) -> None:
+        assert VALID_ACTION_RE.match("users.list") is not None
+
+    def test_valid_versioned(self) -> None:
+        assert VALID_ACTION_RE.match("v1.math.add") is not None
+
+    def test_valid_with_underscores(self) -> None:
+        assert VALID_ACTION_RE.match("my_service.my_action") is not None
+
+    def test_rejects_dollar_prefix(self) -> None:
+        assert VALID_ACTION_RE.match("$node.actions") is None
+
+    def test_rejects_no_dot(self) -> None:
+        assert VALID_ACTION_RE.match("users") is None
+
+    def test_rejects_empty(self) -> None:
+        assert VALID_ACTION_RE.match("") is None
+
+    def test_rejects_path_traversal(self) -> None:
+        assert VALID_ACTION_RE.match("../etc/passwd") is None
+
+    def test_rejects_trailing_dot(self) -> None:
+        assert VALID_ACTION_RE.match("users.") is None
+
+    def test_rejects_leading_dot(self) -> None:
+        assert VALID_ACTION_RE.match(".users.list") is None

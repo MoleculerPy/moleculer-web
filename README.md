@@ -65,12 +65,9 @@ from moleculerpy import Broker
 from moleculerpy.settings import Settings
 from moleculerpy_web import ApiGatewayService
 
-async def main():
-    broker = Broker("gateway-1", settings=Settings(transporter="nats://localhost:4222"))
-    # ... register services ...
-    await broker.start()
-
-    gateway = ApiGatewayService(broker=broker, settings={
+class Gateway(ApiGatewayService):
+    name = "api"
+    settings = {
         "port": 3000,
         "path": "/api",
         "routes": [{
@@ -82,14 +79,13 @@ async def main():
             "cors": {"origin": "*"},
             "rateLimit": {"window": 60, "limit": 100, "headers": True},
         }]
-    })
-    gateway._build_routes()
-    gateway._app = gateway._create_app()
+    }
 
-    import uvicorn
-    config = uvicorn.Config(gateway.app, host="0.0.0.0", port=3000)
-    server = uvicorn.Server(config)
-    await server.serve()
+async def main():
+    broker = Broker("gateway-1", settings=Settings(transporter="nats://localhost:4222"))
+    broker.create_service(Gateway)
+    await broker.start()    # starts gateway + uvicorn automatically
+    # Gateway is now listening on http://0.0.0.0:3000/api/v1/...
 
 asyncio.run(main())
 ```
@@ -215,7 +211,7 @@ HTTP Response (JSON / bytes / redirect / 204)
 
 ```bash
 pip install -e ".[dev]"
-pytest                        # 277 tests, 95% coverage
+pytest                        # 348 tests, 93% coverage
 mypy moleculerpy_web/        # 0 errors (strict mode)
 ruff check moleculerpy_web/  # 0 errors
 ```

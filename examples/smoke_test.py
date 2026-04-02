@@ -1,21 +1,22 @@
-"""Comprehensive Smoke Test — moleculerpy-web Phase 1 Feature Verification.
+"""Real Smoke Test — moleculerpy-web + NATS + real ServiceBroker.
 
-Запуск (сервер уже работает):
-    python examples/smoke_test.py
+Тестирует реальные сценарии:
+  1. CRUD операции (products)
+  2. Inter-service calls (orders → products.get)
+  3. Query filtering, sorting, pagination
+  4. Validation errors (missing fields)
+  5. Not found errors (bad IDs)
+  6. Business logic errors (insufficient stock)
+  7. Analytics (cross-service aggregation)
+  8. Slow actions (timeout behavior)
+  9. Mapping policy (restrict vs all)
+  10. Edge cases (empty body, malformed JSON, etc.)
 
-Запуск с автостартом сервера:
-    python examples/smoke_test.py --start-server
+Запуск (сервер должен работать):
+    python examples/smoke_test_real.py
 
-Тестирует 45+ сценариев по 9 категориям:
-  1. Routing (multiple routes, prefixes, ordering)
-  2. Path Parameters (single, multiple, special chars)
-  3. Query Strings (params, encoding, multiple values)
-  4. HTTP Methods (GET, POST, PUT, PATCH, DELETE)
-  5. Body Parsing (JSON, empty, malformed, large, no content-type)
-  6. Parameter Merge (path < query < body priority)
-  7. Error Handling (400, 404, 422, 500, error format)
-  8. Response Types (JSON, bytes, None→204, string→JSON)
-  9. Edge Cases (slashes, dots, unicode, long URLs)
+Автозапуск сервера:
+    python examples/smoke_test_real.py --start-server
 """
 
 from __future__ import annotations
@@ -29,11 +30,12 @@ import httpx
 
 BASE = "http://127.0.0.1:3000"
 API = f"{BASE}/api/v1"
-INTERNAL = f"{BASE}/api/internal"
+DEBUG = f"{BASE}/api/debug"
 
 passed = 0
 failed = 0
 errors: list[str] = []
+timings: list[tuple[str, float]] = []
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -50,271 +52,261 @@ def check(name: str, condition: bool, detail: str = "") -> None:
         errors.append(f"{name}: {detail}")
 
 
+async def timed_request(
+    client: httpx.AsyncClient, method: str, url: str, **kwargs: object
+) -> httpx.Response:
+    """Execute request and track timing."""
+    start = time.perf_counter()
+    r = await client.request(method, url, **kwargs)
+    elapsed = (time.perf_counter() - start) * 1000
+    timings.append((f"{method} {url.replace(BASE, '')}", elapsed))
+    return r
+
+
 async def run_all_tests() -> None:
-    async with httpx.AsyncClient(timeout=10.0) as c:
-        # =====================================================================
-        # 1. ROUTING
-        # =====================================================================
-        print("\n\033[1m[1] ROUTING\033[0m")
+    async with httpx.AsyncClient(timeout=15.0) as c:
+        # =================================================================
+        print("\n\033[1m[1] HEALTH & CONNECTIVITY\033[0m")
+        # =================================================================
 
-        # 1.1 Basic route works
-        r = await c.get(f"{API}/health")
-        check("1.1 GET /api/v1/health → 200", r.status_code == 200)
-        check("1.1 health response has services", "services" in r.json())
+        r = await timed_request(c, "GET", f"{API}/health")
+        check("1.1 health check → 200", r.status_code == 200)
+        check("1.1 has node ID", "node" in r.json())
+        check("1.1 has services list", len(r.json().get("services", [])) == 3)
 
-        # 1.2 Restrict policy — unknown alias → 404
-        r = await c.get(f"{API}/nonexistent")
-        check("1.2 restrict: unknown path → 404", r.status_code == 404)
-        check("1.2 error is NotFoundError", r.json()["name"] == "NotFoundError")
+        # =================================================================
+        print("\n\033[1m[2] PRODUCTS — CRUD\033[0m")
+        # =================================================================
 
-        # 1.3 Second route (internal, mappingPolicy=all) works
-        r = await c.get(f"{INTERNAL}/health/check")
-        check("1.3 mappingPolicy=all: /internal/health/check → health.check", r.status_code == 200)
+        # List all products
+        r = await timed_request(c, "GET", f"{API}/products")
+        check("2.1 list products → 200", r.status_code == 200)
+        check("2.1 has 5 seed products", r.json()["total"] == 5)
 
-        # 1.4 All-policy derives action from URL
-        r = await c.get(f"{INTERNAL}/echo/params", params={"test": "1"})
-        check("1.4 all-policy: /internal/echo/params → echo.params", r.status_code == 200)
-        check("1.4 params passed through", r.json()["received_params"]["test"] == "1")
+        # Get single product
+        r = await timed_request(c, "GET", f"{API}/products/1")
+        check("2.2 get product #1", r.status_code == 200 and r.json()["name"] == "MacBook Pro 16")
 
-        # 1.5 All-policy unknown action → 404 from broker
-        r = await c.get(f"{INTERNAL}/totally/unknown/action")
-        check("1.5 all-policy: unknown action → 404", r.status_code == 404)
-
-        # 1.6 Separate route prefixes don't interfere
-        r = await c.get(f"{API}/books")
-        check("1.6 /api/v1/books → books.list", r.status_code == 200 and "books" in r.json())
-
-        # =====================================================================
-        # 2. PATH PARAMETERS
-        # =====================================================================
-        print("\n\033[1m[2] PATH PARAMETERS\033[0m")
-
-        # 2.1 Single path param
-        r = await c.get(f"{API}/books/1")
-        check("2.1 /books/1 → id=1", r.status_code == 200 and r.json()["title"] == "Dune")
-
-        # 2.2 Different ID
-        r = await c.get(f"{API}/books/42")
-        check("2.2 /books/42 → Hitchhiker's Guide", r.json()["title"] == "Hitchhiker's Guide")
-
-        # 2.3 Multiple path params (nested resource)
-        r = await c.get(f"{API}/books/1/reviews")
-        check("2.3 /books/{bookId}/reviews → bookId=1", r.json()["bookId"] == "1")
-        check("2.3 reviews returned", len(r.json()["reviews"]) == 1)
-
-        # 2.4 POST with path param
-        r = await c.post(
-            f"{API}/books/2/reviews", json={"user": "Dave", "rating": 5, "text": "Amazing"}
-        )
-        check("2.4 POST /books/2/reviews → add review", r.status_code == 200)
-        check("2.4 bookId passed from path", r.json()["bookId"] == "2")
-
-        # 2.5 Path param with special chars (URL-encoded)
-        r = await c.get(f"{API}/books/999")
-        check("2.5 non-existent id → error", r.status_code != 200)
-
-        # =====================================================================
-        # 3. QUERY STRINGS
-        # =====================================================================
-        print("\n\033[1m[3] QUERY STRINGS\033[0m")
-
-        # 3.1 Single query param
-        r = await c.get(f"{API}/books", params={"genre": "sci-fi"})
-        check("3.1 ?genre=sci-fi filters", all(b["genre"] == "sci-fi" for b in r.json()["books"]))
-
-        # 3.2 Multiple query params
-        r = await c.get(f"{API}/books", params={"genre": "sci-fi", "sort": "year", "order": "desc"})
-        books = r.json()["books"]
-        check("3.2 genre + sort + order", len(books) >= 2 and books[0]["year"] >= books[-1]["year"])
-
-        # 3.3 Pagination params
-        r = await c.get(f"{API}/books", params={"page": "1", "limit": "2"})
-        check("3.3 page=1&limit=2", r.json()["limit"] == 2 and len(r.json()["books"]) <= 2)
-
-        # 3.4 Year range filtering
-        r = await c.get(f"{API}/books", params={"year_from": "1960"})
-        check("3.4 year_from=1960", all(b["year"] >= 1960 for b in r.json()["books"]))
-
-        # 3.5 Search with query
-        r = await c.get(f"{API}/books/search", params={"q": "dune"})
-        check("3.5 search?q=dune", r.json()["count"] >= 1 and r.json()["query"] == "dune")
-
-        # =====================================================================
-        # 4. HTTP METHODS
-        # =====================================================================
-        print("\n\033[1m[4] HTTP METHODS\033[0m")
-
-        # 4.1 GET
-        r = await c.get(f"{API}/books")
-        check("4.1 GET works", r.status_code == 200)
-
-        # 4.2 POST with JSON
-        r = await c.post(
-            f"{API}/books",
+        # Create product
+        r = await timed_request(
+            c,
+            "POST",
+            f"{API}/products",
             json={
-                "title": "Neuromancer",
-                "author": "William Gibson",
-                "year": 1984,
-                "genre": "cyberpunk",
+                "name": "HomePod Mini",
+                "price": 99.0,
+                "category": "audio",
+                "stock": 200,
             },
         )
+        check("2.3 create product → 200", r.status_code == 200)
+        new_id = r.json().get("id")
+        check("2.3 has new ID", new_id is not None)
+
+        # Update product
+        r = await timed_request(c, "PUT", f"{API}/products/{new_id}", json={"price": 89.0})
+        check("2.4 update price → 200", r.status_code == 200 and r.json()["price"] == 89.0)
+
+        # Delete product
+        r = await timed_request(c, "DELETE", f"{API}/products/{new_id}")
+        check("2.5 delete product → 200", r.status_code == 200)
+        check("2.5 deleted data returned", "deleted" in r.json())
+
+        # Verify deleted
+        r = await timed_request(c, "GET", f"{API}/products/{new_id}")
+        check("2.6 deleted product → 404", r.status_code in (400, 404))
+
+        # =================================================================
+        print("\n\033[1m[3] QUERY FILTERING & PAGINATION\033[0m")
+        # =================================================================
+
+        # Filter by category
+        r = await timed_request(c, "GET", f"{API}/products", params={"category": "audio"})
         check(
-            "4.2 POST creates book",
-            r.status_code == 200 and r.json()["created"]["title"] == "Neuromancer",
+            "3.1 filter category=audio", all(p["category"] == "audio" for p in r.json()["products"])
         )
-        new_id = r.json()["created"]["id"]
 
-        # 4.3 PUT update
-        r = await c.put(f"{API}/books/{new_id}", json={"price": 14.99})
+        # Price range
+        r = await timed_request(
+            c, "GET", f"{API}/products", params={"min_price": "500", "max_price": "1000"}
+        )
+        products = r.json()["products"]
+        check("3.2 price range 500-1000", all(500 <= p["price"] <= 1000 for p in products))
+
+        # Sort by price
+        r = await timed_request(c, "GET", f"{API}/products", params={"sort": "price"})
+        prices = [p["price"] for p in r.json()["products"]]
+        check("3.3 sort by price asc", prices == sorted(prices))
+
+        # Pagination
+        r = await timed_request(c, "GET", f"{API}/products", params={"page": "1", "limit": "2"})
+        check("3.4 page=1 limit=2", len(r.json()["products"]) == 2)
+        check("3.4 total still correct", r.json()["total"] == 5)
+
+        r = await timed_request(c, "GET", f"{API}/products", params={"page": "3", "limit": "2"})
+        check("3.5 page=3 limit=2 → last page", len(r.json()["products"]) == 1)
+
+        # Search
+        r = await timed_request(c, "GET", f"{API}/products/search", params={"q": "pro"})
+        check("3.6 search 'pro' finds results", r.json()["count"] >= 2)
+
+        # =================================================================
+        print("\n\033[1m[4] ORDERS — INTER-SERVICE CALLS\033[0m")
+        # =================================================================
+
+        # Create order (calls products.get internally)
+        r = await timed_request(c, "POST", f"{API}/orders", json={"productId": "1", "quantity": 2})
+        check("4.1 create order → 200", r.status_code == 200)
         check(
-            "4.3 PUT updates book", r.status_code == 200 and r.json()["updated"]["price"] == 14.99
+            "4.1 has productName from products.get", r.json().get("productName") == "MacBook Pro 16"
         )
+        check("4.1 total = price * quantity", r.json()["total"] == 2499.0 * 2)
+        order_id = r.json().get("id")
 
-        # 4.4 PATCH update (same endpoint)
-        r = await c.patch(f"{API}/books/{new_id}", json={"genre": "sci-fi"})
+        # Get order
+        r = await timed_request(c, "GET", f"{API}/orders/{order_id}")
+        check("4.2 get order by ID", r.status_code == 200 and r.json()["status"] == "pending")
+
+        # List orders
+        r = await timed_request(c, "GET", f"{API}/orders")
+        check("4.3 list orders", r.json()["total"] >= 1)
+
+        # Order for non-existent product → error from inter-service call
+        r = await timed_request(
+            c, "POST", f"{API}/orders", json={"productId": "99999", "quantity": 1}
+        )
+        check("4.4 order bad product → error", r.status_code != 200)
+
+        # Order with insufficient stock
+        r = await timed_request(
+            c, "POST", f"{API}/orders", json={"productId": "1", "quantity": 99999}
+        )
+        check("4.5 insufficient stock → error", r.status_code != 200)
+
+        # =================================================================
+        print("\n\033[1m[5] ANALYTICS — CROSS-SERVICE AGGREGATION\033[0m")
+        # =================================================================
+
+        r = await timed_request(c, "GET", f"{API}/analytics/summary")
+        check("5.1 summary → 200", r.status_code == 200)
+        check("5.1 has totalProducts", r.json().get("totalProducts", 0) >= 5)
+        check("5.1 has totalOrders", "totalOrders" in r.json())
+
+        # Slow report (tests async delay)
+        r = await timed_request(c, "GET", f"{API}/analytics/report", params={"delay": "0.5"})
+        check("5.2 slow report (0.5s) → 200", r.status_code == 200)
+        check("5.2 report generated", r.json()["report"] == "generated")
+
+        # =================================================================
+        print("\n\033[1m[6] VALIDATION ERRORS\033[0m")
+        # =================================================================
+
+        # Missing name
+        r = await timed_request(c, "POST", f"{API}/products", json={"price": 100})
+        check("6.1 no name → 422", r.status_code == 422)
         check(
-            "4.4 PATCH updates book",
-            r.status_code == 200 and r.json()["updated"]["genre"] == "sci-fi",
+            "6.1 error is UnprocessableEntityError", r.json()["name"] == "UnprocessableEntityError"
         )
 
-        # 4.5 DELETE
-        r = await c.delete(f"{API}/books/{new_id}")
-        check("4.5 DELETE removes book", r.status_code == 200 and "deleted" in r.json())
+        # Missing price
+        r = await timed_request(c, "POST", f"{API}/products", json={"name": "Test"})
+        check("6.2 no price → 422", r.status_code == 422)
 
-        # =====================================================================
-        # 5. BODY PARSING
-        # =====================================================================
-        print("\n\033[1m[5] BODY PARSING\033[0m")
+        # Empty search
+        r = await timed_request(c, "GET", f"{API}/products/search", params={"q": ""})
+        check("6.3 empty search q → 422", r.status_code == 422)
 
-        # 5.1 JSON body parsed correctly
-        r = await c.post(f"{API}/echo", json={"key": "value", "nested": {"a": 1}})
-        check("5.1 JSON body parsed", r.json()["received_params"]["key"] == "value")
-        check("5.1 nested JSON preserved", r.json()["received_params"]["nested"]["a"] == 1)
+        # Missing order productId
+        r = await timed_request(c, "POST", f"{API}/orders", json={"quantity": 1})
+        check("6.4 order no productId → 422", r.status_code == 422)
 
-        # 5.2 Empty body POST → no crash
-        r = await c.post(f"{API}/echo", content=b"", headers={"content-type": "application/json"})
-        check("5.2 empty JSON body → empty params", r.status_code == 200)
+        # Invalid quantity
+        r = await timed_request(c, "POST", f"{API}/orders", json={"productId": "1", "quantity": 0})
+        check("6.5 order qty=0 → 422", r.status_code == 422)
 
-        # 5.3 Malformed JSON → 400
-        r = await c.post(
-            f"{API}/echo", content=b"{invalid json", headers={"content-type": "application/json"}
+        # =================================================================
+        print("\n\033[1m[7] ERROR HANDLING & FORMAT\033[0m")
+        # =================================================================
+
+        # 404 — route not found
+        r = await timed_request(c, "GET", f"{API}/nonexistent")
+        check("7.1 unknown route → 404", r.status_code == 404)
+
+        # 404 — resource not found
+        r = await timed_request(c, "GET", f"{API}/products/99999")
+        check("7.2 bad product ID → error", r.status_code != 200)
+
+        # Malformed JSON
+        r = await timed_request(
+            c,
+            "POST",
+            f"{API}/products",
+            content=b"{bad json",
+            headers={"content-type": "application/json"},
         )
-        check("5.3 malformed JSON → 400", r.status_code == 400)
-        check("5.3 error type INVALID_REQUEST_BODY", r.json()["type"] == "INVALID_REQUEST_BODY")
+        check("7.3 malformed JSON → 400", r.status_code == 400)
+        check("7.3 type INVALID_REQUEST_BODY", r.json()["type"] == "INVALID_REQUEST_BODY")
 
-        # 5.4 No content-type → body ignored, params empty
-        r = await c.post(f"{API}/echo", content=b"some raw data")
-        check("5.4 no content-type → body ignored", r.status_code == 200)
-
-        # 5.5 GET with query (no body)
-        r = await c.get(f"{API}/echo", params={"a": "1", "b": "2"})
-        check("5.5 GET query params only", r.json()["received_params"]["a"] == "1")
-
-        # =====================================================================
-        # 6. PARAMETER MERGE (priority: path < query < body)
-        # =====================================================================
-        print("\n\033[1m[6] PARAMETER MERGE\033[0m")
-
-        # 6.1 Path params passed
-        r = await c.get(f"{API}/books/42")
-        check("6.1 path param id=42", r.json()["id"] == "42")
-
-        # 6.2 Query params added to path params
-        r = await c.get(f"{API}/books/1/reviews", params={"extra": "info"})
-        check("6.2 path(bookId) + query(extra) both present", r.json()["bookId"] == "1")
-
-        # 6.3 Body overrides query
-        r = await c.post(f"{API}/echo", params={"key": "from_query"}, json={"key": "from_body"})
-        check("6.3 body overrides query", r.json()["received_params"]["key"] == "from_body")
-
-        # 6.4 Path + query + body all merged
-        r = await c.post(
-            f"{API}/books/1/reviews",
-            params={"extra": "query_val"},
-            json={"user": "Test", "rating": 3, "text": "OK"},
-        )
-        check("6.4 POST path+query+body → 200", r.status_code == 200)
-
-        # =====================================================================
-        # 7. ERROR HANDLING
-        # =====================================================================
-        print("\n\033[1m[7] ERROR HANDLING\033[0m")
-
-        # 7.1 404 — route not found (restrict)
-        r = await c.get(f"{API}/does-not-exist")
-        check("7.1 unknown route restrict → 404", r.status_code == 404)
-
-        # 7.2 404 — resource not found (from action)
-        r = await c.get(f"{API}/books/99999")
-        check("7.2 book not found → 404", r.status_code == 400 or r.status_code == 404)
-
-        # 7.3 422 — validation error
-        r = await c.post(f"{API}/books", json={"title": ""})
-        check("7.3 validation error → 422", r.status_code == 422)
-        check("7.3 error name", r.json()["name"] == "UnprocessableEntityError")
-
-        # 7.4 400 — malformed body
-        r = await c.post(
-            f"{API}/books", content=b"not json", headers={"content-type": "application/json"}
-        )
-        check("7.4 malformed body → 400", r.status_code == 400)
-
-        # 7.5 422 — division by zero
-        r = await c.get(f"{API}/math/calc", params={"op": "div", "a": "10", "b": "0"})
-        check("7.5 div by zero → 422", r.status_code == 422)
-
-        # 7.6 Error format consistency (Node.js compat)
-        r = await c.get(f"{API}/does-not-exist")
+        # Error format consistency
+        r = await timed_request(c, "GET", f"{API}/nonexistent")
         body = r.json()
-        has_all_fields = all(k in body for k in ("name", "message", "code", "type", "data"))
-        check("7.6 error format: name+message+code+type+data", has_all_fields)
+        check(
+            "7.4 error has all fields",
+            all(k in body for k in ("name", "message", "code", "type", "data")),
+        )
 
-        # =====================================================================
-        # 8. RESPONSE TYPES
-        # =====================================================================
-        print("\n\033[1m[8] RESPONSE TYPES\033[0m")
+        # No content-type → body ignored
+        r = await timed_request(c, "POST", f"{API}/products", content=b"raw data")
+        check("7.5 no content-type → validation error (no name)", r.status_code == 422)
 
-        # 8.1 dict → JSON
-        r = await c.get(f"{API}/health")
-        check("8.1 dict → application/json", "application/json" in r.headers["content-type"])
+        # =================================================================
+        print("\n\033[1m[8] MAPPING POLICY\033[0m")
+        # =================================================================
 
-        # 8.2 None → 204 No Content
-        r = await c.get(f"{API}/echo/empty")
-        check("8.2 None → 204", r.status_code == 204)
+        # Restrict — unknown path with no matching alias pattern
+        r = await timed_request(c, "GET", f"{API}/totally/unknown/deep/path")
+        check("8.1 restrict: /totally/unknown/deep/path → 404", r.status_code == 404)
 
-        # 8.3 bytes → octet-stream
-        r = await c.get(f"{API}/echo/bytes")
-        check("8.3 bytes → octet-stream", r.headers["content-type"] == "application/octet-stream")
-        check("8.3 PNG header bytes", r.content[:4] == b"\x89PNG")
+        # All — derive action from URL
+        r = await timed_request(c, "GET", f"{DEBUG}/analytics/health")
+        check("8.2 all: /debug/analytics/health → analytics.health", r.status_code == 200)
 
-        # 8.4 string → JSON encoded
-        r = await c.get(f"{API}/echo/string", params={"name": "World"})
-        check("8.4 string → JSON encoded", r.headers["content-type"].startswith("application/json"))
-        check("8.4 value is JSON string", r.json() == "Hello, World!")
+        r = await timed_request(c, "GET", f"{DEBUG}/products/list")
+        check("8.3 all: /debug/products/list → products.list", r.status_code == 200)
 
-        # =====================================================================
-        # 9. EDGE CASES
-        # =====================================================================
-        print("\n\033[1m[9] EDGE CASES\033[0m")
+        # All — unknown action → 404 from broker
+        r = await timed_request(c, "GET", f"{DEBUG}/nonexistent/action")
+        check("8.4 all: unknown action → 404", r.status_code == 404)
 
-        # 9.1 Trailing slash
-        r = await c.get(f"{API}/health/")
-        check("9.1 trailing slash /health/ works", r.status_code == 200)
+        # =================================================================
+        print("\n\033[1m[9] EDGE CASES & RESPONSE TYPES\033[0m")
+        # =================================================================
 
-        # 9.2 Math calculation
-        r = await c.get(f"{API}/math/calc", params={"op": "add", "a": "100", "b": "200"})
-        check("9.2 math calc add", r.json()["result"] == 300.0)
+        # Trailing slash
+        r = await timed_request(c, "GET", f"{API}/health/")
+        check("9.1 trailing slash works", r.status_code == 200)
 
-        r = await c.get(f"{API}/math/calc", params={"op": "mul", "a": "7", "b": "6"})
-        check("9.3 math calc mul", r.json()["result"] == 42.0)
+        # Content-Type is JSON
+        r = await timed_request(c, "GET", f"{API}/products")
+        check(
+            "9.2 Content-Type: application/json",
+            "application/json" in r.headers.get("content-type", ""),
+        )
 
-        # 9.4 Empty search query → validation error
-        r = await c.get(f"{API}/books/search", params={"q": ""})
-        check("9.4 empty search q → 422", r.status_code == 422)
+        # Empty body POST
+        r = await timed_request(
+            c, "POST", f"{API}/products", content=b"", headers={"content-type": "application/json"}
+        )
+        check("9.3 empty JSON body → validation (no name)", r.status_code == 422)
 
-        # 9.5 Search query → validation error (missing q)
-        r = await c.get(f"{API}/books/search")
-        check("9.5 missing search q → 422", r.status_code == 422)
+        # Multiple orders (workflow test)
+        r1 = await timed_request(c, "POST", f"{API}/orders", json={"productId": "2", "quantity": 1})
+        r2 = await timed_request(c, "POST", f"{API}/orders", json={"productId": "3", "quantity": 3})
+        check("9.4 multiple orders created", r1.status_code == 200 and r2.status_code == 200)
+
+        # Summary reflects new orders
+        r = await timed_request(c, "GET", f"{API}/analytics/summary")
+        check("9.5 summary reflects orders", r.json()["totalOrders"] >= 3)
 
 
 async def main() -> None:
@@ -322,29 +314,63 @@ async def main() -> None:
 
     server_proc = None
     if "--start-server" in sys.argv:
-        print("Starting demo server...")
+        print("Starting real demo server (NATS)...")
         server_proc = subprocess.Popen(
-            [sys.executable, "examples/demo_app.py"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            [sys.executable, "examples/demo_real.py"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
-        time.sleep(2)
+        # Wait for server to be ready
+        for _i in range(20):
+            try:
+                async with httpx.AsyncClient(timeout=1.0) as c:
+                    r = await c.get(f"{API}/health")
+                    if r.status_code == 200:
+                        break
+            except (httpx.ConnectError, httpx.ReadTimeout):
+                pass
+            time.sleep(0.5)
+        else:
+            print("\033[31mERROR: Server did not start in 10s\033[0m")
+            if server_proc:
+                out = server_proc.stdout.read().decode() if server_proc.stdout else ""
+                print(out[-500:] if len(out) > 500 else out)
+                server_proc.terminate()
+            sys.exit(1)
 
     print("\n" + "=" * 65)
-    print("  moleculerpy-web Smoke Test — Phase 1 Feature Verification")
+    print("  moleculerpy-web REAL Smoke Test")
+    print("  Broker: MoleculerPy + NATS (localhost:4222)")
     print("=" * 65)
 
     try:
         await run_all_tests()
     except httpx.ConnectError:
-        print("\n\033[31mERROR: Cannot connect to server at localhost:3000\033[0m")
-        print("Start the server first:  python examples/demo_app.py")
+        print("\n\033[31mERROR: Cannot connect to localhost:3000\033[0m")
+        print("Start: python examples/demo_real.py")
         sys.exit(1)
     finally:
         if server_proc:
             server_proc.terminate()
             server_proc.wait()
 
+    # Timing report
+    print("\n\033[1m[TIMING]\033[0m")
+    timings.sort(key=lambda t: t[1], reverse=True)
+    for name, ms in timings[:10]:
+        bar = "█" * int(ms / 10) if ms < 500 else "█" * 50
+        color = "\033[32m" if ms < 50 else "\033[33m" if ms < 200 else "\033[31m"
+        print(f"  {color}{ms:7.1f}ms\033[0m {bar} {name}")
+
+    avg = sum(t[1] for t in timings) / len(timings) if timings else 0
+    p50 = sorted(t[1] for t in timings)[len(timings) // 2] if timings else 0
+    p99 = sorted(t[1] for t in timings)[int(len(timings) * 0.99)] if timings else 0
+
+    print(
+        f"\n  avg: {avg:.1f}ms | p50: {p50:.1f}ms | p99: {p99:.1f}ms | total requests: {len(timings)}"
+    )
+
+    # Summary
     print("\n" + "=" * 65)
     total = passed + failed
     if failed == 0:

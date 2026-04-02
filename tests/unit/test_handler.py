@@ -541,6 +541,8 @@ def _make_pipeline_app(
     base_path: str = "/api",
 ) -> Starlette:
     """Create a Starlette app using RouteConfig-based pipeline."""
+    # Shared rate limit stores dict (simulates Service instance ownership)
+    rate_limit_stores: dict = {}
 
     async def catch_all(request: Request) -> Any:
         try:
@@ -550,6 +552,7 @@ def _make_pipeline_app(
                 alias_resolver=alias_resolver,
                 route_config=route_config,
                 base_path=base_path,
+                rate_limit_stores=rate_limit_stores,
             )
         except GatewayError as e:
             return await create_error_response(e)
@@ -846,3 +849,62 @@ class TestMiddlewarePipeline:
         match = resolver.resolve("GET", "/users")
         assert match is not None
         assert match.action == "users.list"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: _get_or_create_store key isolation tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetOrCreateStore:
+    """Verify store keying by (route_path, window, limit)."""
+
+    @pytest.mark.asyncio
+    async def test_same_key_reuses_store(self) -> None:
+        from moleculerpy_web.handler import _get_or_create_store
+        from moleculerpy_web.ratelimit import RateLimitConfig
+
+        stores: dict = {}
+        config = RateLimitConfig(window=60.0, limit=10)
+        store1 = await _get_or_create_store(config, "/api/v1", stores)
+        store2 = await _get_or_create_store(config, "/api/v1", stores)
+        assert store1 is store2
+        assert len(stores) == 1
+        await store1.stop()
+
+    @pytest.mark.asyncio
+    async def test_different_route_creates_separate_stores(self) -> None:
+        from moleculerpy_web.handler import _get_or_create_store
+        from moleculerpy_web.ratelimit import RateLimitConfig
+
+        stores: dict = {}
+        config = RateLimitConfig(window=60.0, limit=10)
+        s1 = await _get_or_create_store(config, "/api/v1", stores)
+        s2 = await _get_or_create_store(config, "/api/v2", stores)
+        assert s1 is not s2
+        assert len(stores) == 2
+        await s1.stop()
+        await s2.stop()
+
+    @pytest.mark.asyncio
+    async def test_different_window_creates_separate_stores(self) -> None:
+        from moleculerpy_web.handler import _get_or_create_store
+        from moleculerpy_web.ratelimit import RateLimitConfig
+
+        stores: dict = {}
+        s1 = await _get_or_create_store(RateLimitConfig(window=60.0, limit=10), "/api", stores)
+        s2 = await _get_or_create_store(RateLimitConfig(window=30.0, limit=10), "/api", stores)
+        assert s1 is not s2
+        await s1.stop()
+        await s2.stop()
+
+    @pytest.mark.asyncio
+    async def test_new_store_is_started(self) -> None:
+        from moleculerpy_web.handler import _get_or_create_store
+        from moleculerpy_web.ratelimit import RateLimitConfig
+
+        stores: dict = {}
+        store = await _get_or_create_store(RateLimitConfig(window=60.0, limit=10), "/api", stores)
+        assert store._task is not None
+        assert not store._task.done()
+        await store.stop()

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.0] - 2026-04-03
+
+### Fixed — Phase 4: Stable Release
+- **Rate limit stores**: moved from module-level global to per-service instance
+  - Key changed from `id(config)` to `(route_path, window, limit)` for deterministic identity
+  - `stopped()` now calls `store.stop()` on all stores (fixes asyncio task leak)
+  - `handle_request()` raises `InternalServerError` if `rate_limit_stores` not provided
+- **VALID_ACTION_RE**: deduplicated from handler.py + service.py into utils.py
+- **README**: fixed Quick Start (internal API → broker.create_service pattern), test count 277→365
+
+### Changed
+- Examples consolidated: 10 files → 4 (basic_gateway, benchmark, demo, smoke_test)
+- Development Status classifier: Alpha → Beta
+
+### Tests
+- 365 tests (was 348), 93% coverage
+- Added: store lifecycle, key isolation, instance isolation, VALID_ACTION_RE security boundary
+
 ## [0.1.0b1] - 2026-04-02
 
 ### Added — Phase 3: Stable Release

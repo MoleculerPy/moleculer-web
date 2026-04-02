@@ -7,7 +7,6 @@ and returns HTTP responses.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from starlette.requests import Request
@@ -28,13 +27,12 @@ from moleculerpy_web.parsers import parse_body
 from moleculerpy_web.ratelimit import MemoryStore, RateLimitConfig, default_key_extractor
 from moleculerpy_web.route import RouteConfig
 from moleculerpy_web.utils import (
+    VALID_ACTION_RE,
     check_etag_match,
     generate_etag,
     normalize_path,
     url_path_to_action,
 )
-
-_VALID_ACTION_RE = re.compile(r"^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)+$")
 
 try:
     from moleculerpy.errors import MoleculerError as _MoleculerError
@@ -44,22 +42,28 @@ except ImportError:
     _HAS_MOLECULERPY = False
     _MoleculerError = None  # type: ignore[assignment, misc]
 
-# Cache for rate limit stores (one per RateLimitConfig identity)
-_rate_limit_stores: dict[int, MemoryStore] = {}
 
-
-async def _get_or_create_store(config: RateLimitConfig) -> MemoryStore:
+async def _get_or_create_store(
+    config: RateLimitConfig,
+    route_path: str,
+    stores: dict[tuple[str, float, int], MemoryStore],
+) -> MemoryStore:
     """Get or create a MemoryStore for the given rate limit config.
 
     Store is started automatically on first creation (reset loop begins).
-    Keyed by id(config) — safe as long as config is kept alive by RouteConfig.
+    Keyed by (route_path, window, limit) for deterministic identity.
+
+    Args:
+        config: Rate limit configuration.
+        route_path: Route path prefix (for unique keying).
+        stores: Shared dict of stores (owned by ApiGatewayService).
     """
-    key = id(config)
-    if key not in _rate_limit_stores:
+    key = (route_path, config.window, config.limit)
+    if key not in stores:
         store = MemoryStore(config.window)
         await store.start()
-        _rate_limit_stores[key] = store
-    return _rate_limit_stores[key]
+        stores[key] = store
+    return stores[key]
 
 
 def build_response(
@@ -157,6 +161,7 @@ async def handle_request(
     # Legacy params for backward compatibility with existing tests/callers
     route_path: str | None = None,
     mapping_policy: str | None = None,
+    rate_limit_stores: dict[tuple[str, float, int], MemoryStore] | None = None,
 ) -> Response:
     """Handle HTTP request: resolve alias -> middleware pipeline -> broker.call() -> response.
 
@@ -222,7 +227,7 @@ async def handle_request(
         raise NotFoundError(f"Route not found: {method} {raw_path}")
 
     # Validate action name format
-    if not action_name or not _VALID_ACTION_RE.match(action_name):
+    if not action_name or not VALID_ACTION_RE.match(action_name):
         raise NotFoundError(f"Route not found: {method} {raw_path}")
 
     # 5. Merge params (Node.js compat: body < query < path_params)
@@ -308,7 +313,13 @@ async def handle_request(
                 key_fn = _rl_config.key if _rl_config.key is not None else default_key_extractor
                 key = key_fn(ctx.request)
                 if key:
-                    store = await _get_or_create_store(_rl_config)
+                    if rate_limit_stores is None:
+                        raise InternalServerError(
+                            "rate_limit_stores not provided to handle_request"
+                        )
+                    store = await _get_or_create_store(
+                        _rl_config, effective_route_path, rate_limit_stores
+                    )
                     count = await store.increment(key)
                     remaining = _rl_config.limit - count
                     if _rl_config.headers:

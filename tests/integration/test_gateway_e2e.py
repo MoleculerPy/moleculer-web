@@ -450,3 +450,73 @@ class TestEmptyBodyGet:
         assert resp.status_code == 200
         # Params should only contain query params (none here)
         mock_broker.call.assert_awaited_once_with("users.list", {}, meta={})
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Rate limiting E2E (instance-level stores)
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimitE2E:
+    """E2E: rate limiting with instance-level stores via full gateway."""
+
+    @pytest.fixture
+    async def gateway_ratelimit(self, mock_broker: MagicMock) -> ApiGatewayService:
+        svc = ApiGatewayService(
+            broker=mock_broker,
+            settings={
+                "port": 3000,
+                "path": "/api",
+                "routes": [
+                    {
+                        "path": "/",
+                        "aliases": {"GET /users": "users.list"},
+                        "rateLimit": {"window": 60, "limit": 2, "headers": True},
+                    }
+                ],
+            },
+        )
+        svc._build_routes()
+        svc._app = svc._create_app()
+        return svc
+
+    @pytest.fixture
+    async def client_rl(self, gateway_ratelimit: ApiGatewayService) -> AsyncClient:
+        transport = ASGITransport(app=gateway_ratelimit.app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
+
+    async def test_rate_limit_headers_present(self, client_rl: AsyncClient) -> None:
+        """First request should include rate limit headers."""
+        resp = await client_rl.get("/api/users")
+        assert resp.status_code == 200
+        assert "x-rate-limit-limit" in resp.headers
+        assert resp.headers["x-rate-limit-limit"] == "2"
+
+    async def test_rate_limit_exceeded_returns_429(self, client_rl: AsyncClient) -> None:
+        """Third request on limit=2 should return 429."""
+        await client_rl.get("/api/users")  # 1
+        await client_rl.get("/api/users")  # 2
+        resp = await client_rl.get("/api/users")  # 3 → exceeded
+        assert resp.status_code == 429
+
+    async def test_rate_limit_remaining_decrements(self, client_rl: AsyncClient) -> None:
+        """Remaining header should decrement with each request."""
+        r1 = await client_rl.get("/api/users")
+        r2 = await client_rl.get("/api/users")
+        assert r1.headers["x-rate-limit-remaining"] == "1"
+        assert r2.headers["x-rate-limit-remaining"] == "0"
+
+    async def test_stopped_cleans_rate_limit_stores(
+        self, gateway_ratelimit: ApiGatewayService, client_rl: AsyncClient
+    ) -> None:
+        """After making requests (creating stores), stopped() should clean them."""
+        await client_rl.get("/api/users")  # triggers store creation
+        assert len(gateway_ratelimit._rate_limit_stores) > 0
+
+        # Mock server to avoid uvicorn cleanup issues
+        gateway_ratelimit._server = None
+        gateway_ratelimit._server_task = None
+        await gateway_ratelimit.stopped()
+
+        assert len(gateway_ratelimit._rate_limit_stores) == 0
