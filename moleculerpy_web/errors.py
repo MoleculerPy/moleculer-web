@@ -191,6 +191,19 @@ def moleculer_error_to_http(err: Exception) -> GatewayError:
     if isinstance(err, MaxCallLevelError):
         return InternalServerError(message, data=data)
     if isinstance(err, MoleculerClientError):
+        # Honour the Moleculer error code: MoleculerClientError carries an HTTP
+        # status-aligned code (e.g. 401/403/404). Previously this branch mapped
+        # every client error to 400, which masked auth failures behind a
+        # misleading "Bad Request". Fall back to 400 only when the code is not
+        # an informative 4xx status.
+        raw_code = getattr(err, "code", None)
+        if isinstance(raw_code, int):
+            if raw_code == 401:
+                return UnauthorizedError(message, data=data)
+            if raw_code == 403:
+                return ForbiddenError(message, data=data)
+            if raw_code == 404:
+                return NotFoundError(message, data=data)
         return BadRequestError(message, data=data)
     if isinstance(err, MoleculerRetryableError):
         return ServiceUnavailableError(message, data=data)
