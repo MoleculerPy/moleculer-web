@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.1] - 2026-04-09
+
+### Fixed
+- **`MoleculerClientError` HTTP status mapping (KNOWN-ISSUES #19)** —
+  `moleculer_error_to_http` now honours the `code` field on
+  `MoleculerClientError` and dispatches to the matching typed gateway
+  error: `code=401` → `UnauthorizedError` (HTTP 401),
+  `code=403` → `ForbiddenError` (HTTP 403),
+  `code=404` → `NotFoundError` (HTTP 404). Anything else still falls
+  back to `BadRequestError` (HTTP 400, unchanged behaviour). Previously
+  every `MoleculerClientError` landed on HTTP 400 regardless of its
+  code, which masked auth failures ("missing token" looked like a
+  malformed body).
+
+### Tests / evidence
+- **`demo_web` tightened** —
+  `test_client_error_401` / `_403` / `_404` assert exact HTTP status
+  (previously `status in (400, 401)` which passed both the buggy 400
+  and the fixed 401). New `users.forbidden_op` and
+  `users.missing_resource` actions exercise the 403 and 404 branches.
+  Counterfactual: reverting `moleculer_error_to_http` to unconditional
+  `BadRequestError` makes all three demo assertions fail loudly with
+  `status=400`.
+- **Unit regression tests** — 3 new tests in
+  `tests/unit/test_errors.py`:
+  `test_moleculer_client_error_401_maps_to_unauthorized`,
+  `test_moleculer_client_error_403_maps_to_forbidden`,
+  `test_moleculer_client_error_404_maps_to_not_found`.
+
 ## [0.1.0] - 2026-04-03
 
 ### Fixed — Phase 4: Stable Release
